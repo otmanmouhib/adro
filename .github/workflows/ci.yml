@@ -6,22 +6,12 @@ on:
     branches: [master, develop]
 
 jobs:
-  no-nested-git:
+  cross-cutting:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - run: bash scripts/check-no-nested-git.sh
-
-  no-tracked-ignored:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
       - run: bash scripts/check-no-tracked-ignored.sh
-
-  version-consistency:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
       - run: bash scripts/check-version-consistency.sh
 
   yaml-validate:
@@ -33,6 +23,30 @@ jobs:
           python-version: '3.11'
       - run: pip install pyyaml
       - run: bash scripts/check-yaml.sh
+
+  audit-hardware:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash scripts/audit-hardware.sh
+
+  audit-firmware:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash scripts/audit-firmware.sh
+
+  audit-hub:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash scripts/audit-hub.sh
+
+  audit-cloud:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash scripts/audit-cloud.sh
 
   firmware-build:
     runs-on: ubuntu-latest

@@ -21,12 +21,22 @@ run() {
   fi
 }
 
+# ── Cross-cutting ────────────────────────────────────────────
 run "branch"                 bash scripts/check-branch.sh
 run "clean tree"             bash scripts/check-clean-tree.sh
 run "no nested .git"         bash scripts/check-no-nested-git.sh
 run "no tracked-ignored"     bash scripts/check-no-tracked-ignored.sh
-run "version consistency"    bash scripts/check-version-consistency.sh
 run "YAML syntax"            bash scripts/check-yaml.sh
+
+# ── Per-domain ───────────────────────────────────────────────
+echo "── Hardware ───────────────────────────────────────────────"
+run "hardware"               bash scripts/audit-hardware.sh
+echo "── Firmware ───────────────────────────────────────────────"
+run "firmware"               bash scripts/audit-firmware.sh
+echo "── Hub ────────────────────────────────────────────────────"
+run "hub"                    bash scripts/audit-hub.sh
+echo "── Cloud ──────────────────────────────────────────────────"
+run "cloud"                  bash scripts/audit-cloud.sh
 
 echo "═══════════════════════════════════════════════════════════"
 echo "  ✔ All checks passed"
