@@ -27,20 +27,27 @@ for board_dir in hardware/*/; do
   ren=$(find "$board_dir/renders" -type f 2>/dev/null | wc -l)
   [ "$ren" -gt 0 ] && echo "    OK   renders ($ren)" || echo "    WARN no renders"
 
-  pcb=$(find "$board_dir" -maxdepth 1 -name '*.kicad_pcb' 2>/dev/null | head -n1)
-  if [ -n "$pcb" ]; then
-    if command -v kicad-cli >/dev/null 2>&1; then
-      if kicad-cli pcb drc --exit-code-violations "$pcb" >/dev/null 2>&1; then
-        echo "    OK   KiCad DRC"
+  # KiCad DRC only when a KiCad project exists
+  kicad_any=$(find "$board_dir" -maxdepth 1 \
+    \( -name '*.kicad_pro' -o -name '*.kicad_sch' -o -name '*.kicad_pcb' \) \
+    2>/dev/null | wc -l)
+
+  if [ "$kicad_any" -gt 0 ]; then
+    pcb=$(find "$board_dir" -maxdepth 1 -name '*.kicad_pcb' 2>/dev/null | head -n1)
+    if [ -n "$pcb" ]; then
+      if command -v kicad-cli >/dev/null 2>&1; then
+        if kicad-cli pcb drc --exit-code-violations "$pcb" >/dev/null 2>&1; then
+          echo "    OK   KiCad DRC"
+        else
+          echo "    FAIL KiCad DRC"
+          fail=1
+        fi
       else
-        echo "    FAIL KiCad DRC"
-        fail=1
+        echo "    WARN kicad-cli not installed — DRC skipped"
       fi
     else
-      echo "    WARN kicad-cli not installed — DRC skipped"
+      echo "    WARN KiCad project present but no .kicad_pcb"
     fi
-  else
-    echo "    WARN no .kicad_pcb file"
   fi
 done
 
