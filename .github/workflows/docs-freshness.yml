@@ -1,0 +1,77 @@
+name: Docs Freshness
+on:
+  pull_request:
+    branches: [master, develop]
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Warn if source changed without docs
+        run: |
+          set -e
+          CHANGED=$(git diff --name-only origin/${{ github.base_ref }}...HEAD || true)
+          echo "Changed files:"
+          echo "$CHANGED"
+          warn=0
+
+          # Hardware + firmware per board
+          for board in switch-station-v0 dosing-station-v0 onesense-v0 sixsense-v0; do
+            if echo "$CHANGED" | grep -q "^hardware/$board/"; then
+              if ! echo "$CHANGED" | grep -q "^docs/01-hardware/$board.md"; then
+                echo "::warning::hardware/$board changed without docs/01-hardware/$board.md"
+                warn=1
+              fi
+            fi
+            if echo "$CHANGED" | grep -q "^firmware/$board/"; then
+              if ! echo "$CHANGED" | grep -q "^docs/02-firmware/$board.md"; then
+                echo "::warning::firmware/$board changed without docs/02-firmware/$board.md"
+                warn=1
+              fi
+            fi
+          done
+
+          # Hub
+          if echo "$CHANGED" | grep -q "^hub/docker/"; then
+            if ! echo "$CHANGED" | grep -q "^docs/03-hub/hub-containers.md"; then
+              echo "::warning::hub/docker changed without docs/03-hub/hub-containers.md"
+              warn=1
+            fi
+          fi
+          if echo "$CHANGED" | grep -q "^hub/image/"; then
+            if ! echo "$CHANGED" | grep -q "^docs/03-hub/hub-image.md"; then
+              echo "::warning::hub/image changed without docs/03-hub/hub-image.md"
+              warn=1
+            fi
+          fi
+          if echo "$CHANGED" | grep -q "^hub/raspap/"; then
+            if ! echo "$CHANGED" | grep -q "^docs/03-hub/"; then
+              echo "::warning::hub/raspap changed without docs/03-hub/"
+              warn=1
+            fi
+          fi
+
+          # Cloud
+          if echo "$CHANGED" | grep -q "^cloud/docker/"; then
+            if ! echo "$CHANGED" | grep -q "^docs/04-cloud/ddns-containers.md"; then
+              echo "::warning::cloud/docker changed without docs/04-cloud/ddns-containers.md"
+              warn=1
+            fi
+          fi
+          if echo "$CHANGED" | grep -q "^cloud/image/"; then
+            if ! echo "$CHANGED" | grep -q "^docs/04-cloud/ddns-iso.md"; then
+              echo "::warning::cloud/image changed without docs/04-cloud/ddns-iso.md"
+              warn=1
+            fi
+          fi
+          if echo "$CHANGED" | grep -q "^cloud/config/"; then
+            if ! echo "$CHANGED" | grep -q "^docs/04-cloud/ddns-firstboot.md"; then
+              echo "::warning::cloud/config changed without docs/04-cloud/ddns-firstboot.md"
+              warn=1
+            fi
+          fi
+
+          [ $warn -eq 0 ] && echo "Docs freshness OK" || true
