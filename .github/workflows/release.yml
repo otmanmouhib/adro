@@ -1,0 +1,30 @@
+name: Release
+on:
+  push:
+    tags: ['v*.*.*']
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install platformio
+      - run: bash scripts/build-firmware.sh || true
+      - run: bash scripts/build-hub-image.sh || true
+      - run: bash scripts/build-cloud-iso.sh || true
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            releases/**/*.bin
+            releases/**/*.iso
+            releases/**/*.img.xz
+            releases/**/SHA256SUMS
+          generate_release_notes: true
