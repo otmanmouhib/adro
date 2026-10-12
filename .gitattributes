@@ -1,0 +1,17 @@
+*.kicad_pcb binary
+*.kicad_sch binary
+*.kicad_pro binary
+gerbers/** binary
+renders/** binary
+*.iso binary
+*.img binary
+*.img.xz binary
+*.bin binary
+*.hex binary
+*.uf2 binary
+
+* text=auto eol=lf
+*.sh text eol=lf
+*.md text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf

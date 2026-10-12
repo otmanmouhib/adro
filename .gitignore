@@ -1,0 +1,65 @@
+# Build artifacts
+build/
+dist/
+*.o
+*.elf
+*.map
+
+# Firmware binaries
+*.bin
+*.hex
+*.uf2
+
+# ISOs and images
+*.iso
+*.img
+*.img.xz
+
+# Releases (tracked by manifest only)
+releases/*
+!releases/.gitkeep
+
+# Archive
+archive/*
+!archive/.gitkeep
+
+# Secrets
+.env
+*.env
+!.env.example
+secrets/
+*.key
+*.crt
+*.pem
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# KiCad
+*.kicad_prl
+*.kicad_autosave
+fp-info-cache
+*-backups/
+*.bak
+
+# Python
+__pycache__/
+*.pyc
+
+# Node
+node_modules/
+
+# Logs
+*.log
+logs/
+
+# PlatformIO
+.pio/
+.pioenvs/
+.piolibdeps/
