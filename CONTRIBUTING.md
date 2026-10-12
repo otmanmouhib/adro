@@ -42,3 +42,14 @@ Quick rules:
 - Release via `release/<version>` → merge commit into `master`
 - Hotfix via `hotfix/<name>` off `master`
 - No direct pushes to `master`
+
+## Quick Reference — Branching
+
+| Goal | Branch from | Merge into | Method |
+|---|---|---|---|
+| New feature | `develop` | `develop` | Squash |
+| Planned release | `develop` | `master` | Merge commit |
+| Emergency fix | `master` | `master` | Merge commit |
+| After release / hotfix | `master` | `develop` | Merge commit |
+
+**Never** commit directly to `master`. Every change ships through a PR.
