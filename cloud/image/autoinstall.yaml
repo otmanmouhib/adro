@@ -1,0 +1,16 @@
+#cloud-config
+autoinstall:
+  version: 1
+  identity:
+    hostname: adro-cloud
+    username: adro
+    password: "$6$CHANGE_ME_ON_FIRSTBOOT"
+  ssh:
+    install-server: true
+  packages:
+    - docker.io
+    - docker-compose-plugin
+    - curl
+    - ca-certificates
+  late-commands:
+    - curtin in-target -- bash /opt/adro/firstboot.sh
