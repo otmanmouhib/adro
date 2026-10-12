@@ -31,3 +31,9 @@ Adro is a modular IoT platform for precision agriculture:
 - Releases are tagged and manifested.
 
 See [LICENSE](LICENSE) and [CONTRIBUTING.md](CONTRIBUTING.md).
+
+## Branching & Governance
+
+- [Branching strategy](docs/00-platform/branching-strategy.md)
+- [Contributing](CONTRIBUTING.md)
+- [Global repository rules](docs/00-platform/global-repository.md)

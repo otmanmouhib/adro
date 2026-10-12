@@ -30,3 +30,15 @@ Examples:
 ## Tagging
   git tag -a v0.1.0 -m "Adro Platform Release v0.1.0"
   git push origin v0.1.0
+
+## Branching
+
+See [docs/00-platform/branching-strategy.md](docs/00-platform/branching-strategy.md)
+for the full model.
+
+Quick rules:
+- Work on `feature/<scope>/<name>` off `develop`
+- Squash into `develop`
+- Release via `release/<version>` → merge commit into `master`
+- Hotfix via `hotfix/<name>` off `master`
+- No direct pushes to `master`
