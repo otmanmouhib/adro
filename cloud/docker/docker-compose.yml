@@ -1,49 +1,20 @@
 name: adro-cloud
 
 services:
-  traefik:
-    image: traefik:v3
-    restart: unless-stopped
-
-  certbot:
-    image: certbot/certbot:latest
-    restart: unless-stopped
-
   mosquitto:
     image: eclipse-mosquitto:2
+    container_name: adro-cloud-mosquitto
     restart: unless-stopped
-
-  noip-duc:
-    image: coppit/no-ip:latest
-    restart: unless-stopped
-
-  remote-commander:
-    image: adro/remote-commander:0.1.0
-    restart: unless-stopped
-
-  waha:
-    image: devlikeapro/waha:latest
-    restart: unless-stopped
-
-  watchtower:
-    image: containrrr/watchtower:latest
-    restart: unless-stopped
-
-  portainer:
-    image: portainer/portainer-ce:latest
-    restart: unless-stopped
-
-  homepage:
-    image: ghcr.io/gethomepage/homepage:latest
-    restart: unless-stopped
-
-  uptime-kuma:
-    image: louislam/uptime-kuma:1
-    restart: unless-stopped
-
-  redis:
-    image: redis:7-alpine
-    restart: unless-stopped
+    ports:
+      - "1883:1883"
+      - "9001:9001"
+    volumes:
+      - ./mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - /etc/mosquitto/passwd:/mosquitto/config/passwd
+      - /etc/mosquitto/acl:/mosquitto/config/acl
+      - /opt/adro-data/mosquitto-cloud:/mosquitto/data
+    networks:
+      - adro-cloud-net
 
 networks:
   default:

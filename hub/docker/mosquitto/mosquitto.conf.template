@@ -1,0 +1,38 @@
+# Adro Hub — Mosquitto broker
+# Rendered at container start by docker-entrypoint.sh using env vars.
+# Never commit real credentials — they come from /opt/adro-config/site.env
+
+# ── Local MQTT listener (LAN) ───────────────────────────
+listener 1883 0.0.0.0
+protocol mqtt
+allow_anonymous true
+
+# ── WebSocket listener (browser dashboards) ─────────────
+listener 9001 0.0.0.0
+protocol websockets
+allow_anonymous true
+
+# ── Persistence ─────────────────────────────────────────
+persistence true
+persistence_location /mosquitto/data/
+
+# ── Logging ─────────────────────────────────────────────
+log_dest stdout
+log_dest file /mosquitto/log/mosquitto.log
+log_type all
+log_timestamp true
+log_timestamp_format %Y-%m-%dT%H:%M:%S
+
+# ── Limits ──────────────────────────────────────────────
+max_queued_bytes 524288000
+max_queued_messages 50000
+persistent_client_expiration 2d
+
+# BRIDGE_START — everything below only included if bridge credentials are set
+connection bridge-to-remote
+address ${BRIDGE_REMOTE_HOST}:${BRIDGE_REMOTE_PORT}
+remote_username ${BRIDGE_USERNAME}
+remote_password ${BRIDGE_PASSWORD}
+remote_clientid ${BRIDGE_CLIENT_ID}
+cleansession false
+topic # both 0 "" ""

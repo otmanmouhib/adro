@@ -2,28 +2,20 @@ name: adro-hub
 
 services:
   mosquitto:
-    image: eclipse-mosquitto:2
+    build: ./mosquitto
+    image: adro/mosquitto-hub:0.1.0
+    container_name: adro-mosquitto
     restart: unless-stopped
-
-  commander:
-    image: adro/commander:0.1.0
-    restart: unless-stopped
-
-  dashboard:
-    image: adro/dashboard:0.1.0
-    restart: unless-stopped
-
-  discovery:
-    image: adro/discovery:0.1.0
-    restart: unless-stopped
-
-  watchtower:
-    image: containrrr/watchtower:latest
-    restart: unless-stopped
-
-  portainer:
-    image: portainer/portainer-ce:latest
-    restart: unless-stopped
+    env_file:
+      - /opt/adro-config/site.env
+    ports:
+      - "1883:1883"     # MQTT (LAN)
+      - "9001:9001"     # MQTT over WebSocket
+    volumes:
+      - /opt/adro-data/mosquitto:/mosquitto/data
+      - /opt/adro-data/mosquitto-log:/mosquitto/log
+    networks:
+      - adro-net
 
 networks:
   default:
