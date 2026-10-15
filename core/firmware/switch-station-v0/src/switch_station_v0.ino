@@ -1,4 +1,3 @@
-
 #include <WiFi.h>
 #include <PubSubClient.h>
 #include <ArduinoJson.h>
@@ -14,20 +13,17 @@
 //             SWITCH STATION V0 CONFIG
 // ======================================================
 
-// ==== Firmware / OTA ====
-const char* currentFirmwareVersion = "1.0.0";
-const char* otaManifestURL = "http://adro.local:8000/switchstation01/manifest.json";
+const char* currentFirmwareVersion = "1.0.40";
+const char* otaManifestBase = "http://adro.local:8000";
 
-// Broker hostname — resolved via mDNS. No hardcoded IP fallback.
 const char* mqtt_host = "adro.local";
 const int   mqtt_port = 1883;
 
-IPAddress   mqtt_broker_ip;   // resolved at boot and on reconnect
+IPAddress   mqtt_broker_ip;
 
 unsigned long lastOtaCheck = 0;
 const unsigned long otaInterval = 60000;
 
-// ==== NTP ====
 const long gmtOffset_sec = 3600;
 const int daylightOffset_sec = 0;
 bool ntpSynced = false;
@@ -39,21 +35,16 @@ const bool CHANNEL_ACTIVE_HIGH = true;
 
 inline void setChannel(int idx, bool on) {
   if (idx < 0 || idx >= NUM_CHANNELS) return;
-  if (CHANNEL_ACTIVE_HIGH) {
-    digitalWrite(CHANNEL_PINS[idx], on ? HIGH : LOW);
-  } else {
-    digitalWrite(CHANNEL_PINS[idx], on ? LOW : HIGH);
-  }
+  if (CHANNEL_ACTIVE_HIGH) digitalWrite(CHANNEL_PINS[idx], on ? HIGH : LOW);
+  else                     digitalWrite(CHANNEL_PINS[idx], on ? LOW  : HIGH);
 }
 
-// ==== Per-channel state and timers ====
 bool          channelState[NUM_CHANNELS]   = {false, false, false, false};
 unsigned long channelOnMs[NUM_CHANNELS]    = {1000, 1000, 1000, 1000};
 unsigned long channelOffMs[NUM_CHANNELS]   = {1000, 1000, 1000, 1000};
 unsigned long channelTimer[NUM_CHANNELS]   = {0, 0, 0, 0};
-unsigned long channelAutoOff[NUM_CHANNELS] = {0, 0, 0, 0};  // 0 = no timed auto-off
+unsigned long channelAutoOff[NUM_CHANNELS] = {0, 0, 0, 0};
 
-// ==== Automation ====
 bool automationEnabled = false;
 
 // ==== WiFi ====
@@ -61,44 +52,96 @@ const char* ssid     = "Tenda_2AAA80";
 const char* password = "";
 
 // ==== Identity ====
-const char* device_id   = "switchstation01";
-const char* site_id     = "main";
-const char* bridge_id   = "hub";
+String deviceMac;                  // "083af252d1dc", no colons, lowercase
+const char* deviceType = "switch"; // fixed for this firmware
+String assignedId;                 // e.g. "switchstation01", set after claim
+bool   claimed = false;
+
+// ==== Topics ====
+String topic_hello;      // adro/unclaimed/<mac>/hello
+String topic_bye;        // adro/unclaimed/<mac>/bye
+String topic_claimed;    // adro/devices/switch/<mac>/claimed
+String topic_unclaimed;  // adro/devices/switch/<mac>/unclaimed
+String topic_status;     // adro/devices/switch/<mac>/status
+String topic_telemetry;  // adro/devices/switch/<mac>/telemetry
+String topic_command;    // adro/devices/switch/<mac>/command
+String topic_config;     // adro/devices/switch/<mac>/config
+
+// Legacy topics (dual-publish during migration; drop once fleet is migrated)
+String legacy_status;
+String legacy_telemetry;
+String legacy_command;
+String legacy_config;
 
 WiFiClient espClient;
 PubSubClient client(espClient);
 
-// ==== MQTT topics ====
-String topic_telemetry;
-String topic_status;
-String topic_command;
-String topic_config;
-
-// ==== Timing ====
 unsigned long lastTelemetry = 0;
 const long telemetryInterval = 15000;
+unsigned long lastHello = 0;
+const long helloInterval = 30000;
 
 unsigned long startupTime = 0;
 const unsigned long rebootInterval = 6UL * 60UL * 60UL * 1000UL;
 
-// ==== Sequence counter ====
 uint32_t seqCounter = 0;
 
-// ==== EEPROM ====
-#define EEPROM_SIZE       64
+// ======================================================
+//                     EEPROM
+// ======================================================
+#define EEPROM_SIZE       128
 #define EEPROM_MAGIC      0xAD
 #define ADDR_MAGIC        0
 #define ADDR_AUTOMATION   1
-#define ADDR_CHANNEL_BASE 2
-// Per channel (i = 0..3): 12 bytes at ADDR_CHANNEL_BASE + i*12
-//   [0..3]  channelOnMs  (unsigned long)
-//   [4..7]  channelOffMs (unsigned long)
-//   [8]     channelState (byte)
+#define ADDR_CLAIMED      2
+#define ADDR_ASSIGNED     3            // 24 bytes
+#define ADDR_CHANNEL_BASE 32           // 4 * 12 = 48 bytes -> ends at 80
+
+void saveSettings() {
+  EEPROM.write(ADDR_MAGIC, EEPROM_MAGIC);
+  EEPROM.write(ADDR_AUTOMATION, automationEnabled ? 1 : 0);
+  EEPROM.write(ADDR_CLAIMED, claimed ? 1 : 0);
+
+  char buf[24] = {0};
+  assignedId.toCharArray(buf, sizeof(buf));
+  for (int i = 0; i < 24; i++) EEPROM.write(ADDR_ASSIGNED + i, (uint8_t)buf[i]);
+
+  for (int i = 0; i < NUM_CHANNELS; i++) {
+    int base = ADDR_CHANNEL_BASE + i * 12;
+    EEPROM.put(base + 0, channelOnMs[i]);
+    EEPROM.put(base + 4, channelOffMs[i]);
+    EEPROM.write(base + 8, channelState[i] ? 1 : 0);
+  }
+  EEPROM.commit();
+  Serial.println("[EEPROM] saved");
+}
+
+void loadSettings() {
+  if (EEPROM.read(ADDR_MAGIC) == EEPROM_MAGIC) {
+    automationEnabled = EEPROM.read(ADDR_AUTOMATION) == 1;
+    claimed           = EEPROM.read(ADDR_CLAIMED)    == 1;
+
+    char buf[24] = {0};
+    for (int i = 0; i < 24; i++) buf[i] = (char)EEPROM.read(ADDR_ASSIGNED + i);
+    assignedId = String(buf);
+
+    for (int i = 0; i < NUM_CHANNELS; i++) {
+      int base = ADDR_CHANNEL_BASE + i * 12;
+      EEPROM.get(base + 0, channelOnMs[i]);
+      EEPROM.get(base + 4, channelOffMs[i]);
+      channelState[i] = EEPROM.read(base + 8) == 1;
+    }
+    Serial.printf("[EEPROM] loaded: claimed=%d id='%s' automation=%d\n",
+                  claimed, assignedId.c_str(), automationEnabled);
+  } else {
+    Serial.println("[EEPROM] no valid data, defaults");
+    saveSettings();
+  }
+}
 
 // ======================================================
 //                     RGB LED
 // ======================================================
-
 #define RGB_LED_PIN    48
 #define RGB_LED_COUNT  1
 #define RGB_LED_BRIGHT 40
@@ -122,7 +165,6 @@ Adafruit_NeoPixel rgbLed(RGB_LED_COUNT, RGB_LED_PIN, NEO_GRB + NEO_KHZ800);
 
 uint32_t ledBaseColor = C_OFF;
 uint32_t ledBaseShown = 0xFFFFFFFF;
-
 bool     ledBlinkActive = false;
 uint32_t ledBlinkColor = 0;
 uint8_t  ledBlinkRemaining = 0;
@@ -133,173 +175,138 @@ const unsigned long LED_BLINK_INTERVAL = 90;
 void ledBegin() {
   rgbLed.begin();
   rgbLed.setBrightness(RGB_LED_BRIGHT);
-  rgbLed.setPixelColor(0, C_WHITE);
-  rgbLed.show();
-  delay(150);
-  rgbLed.setPixelColor(0, C_OFF);
-  rgbLed.show();
+  rgbLed.setPixelColor(0, C_WHITE); rgbLed.show(); delay(150);
+  rgbLed.setPixelColor(0, C_OFF);   rgbLed.show();
   ledBaseShown = C_OFF;
 }
-
 void ledSetBase(uint32_t color) {
   ledBaseColor = color;
   if (!ledBlinkActive && ledBaseShown != color) {
-    rgbLed.setPixelColor(0, color);
-    rgbLed.show();
-    ledBaseShown = color;
+    rgbLed.setPixelColor(0, color); rgbLed.show(); ledBaseShown = color;
   }
 }
-
 void ledBlink(uint32_t color, uint8_t times) {
   if (times == 0) return;
-  ledBlinkActive = true;
-  ledBlinkColor = color;
-  ledBlinkRemaining = times * 2;
-  ledBlinkOn = true;
+  ledBlinkActive = true; ledBlinkColor = color;
+  ledBlinkRemaining = times * 2; ledBlinkOn = true;
   ledBlinkLast = millis();
-  rgbLed.setPixelColor(0, color);
-  rgbLed.show();
-  ledBaseShown = color;
+  rgbLed.setPixelColor(0, color); rgbLed.show(); ledBaseShown = color;
 }
-
 void ledLoop() {
   if (!ledBlinkActive) return;
-  unsigned long now = millis();
-  if (now - ledBlinkLast < LED_BLINK_INTERVAL) return;
-  ledBlinkLast = now;
-  ledBlinkOn = !ledBlinkOn;
-  ledBlinkRemaining--;
+  if (millis() - ledBlinkLast < LED_BLINK_INTERVAL) return;
+  ledBlinkLast = millis();
+  ledBlinkOn = !ledBlinkOn; ledBlinkRemaining--;
   if (ledBlinkRemaining == 0) {
     ledBlinkActive = false;
-    rgbLed.setPixelColor(0, ledBaseColor);
-    rgbLed.show();
-    ledBaseShown = ledBaseColor;
+    rgbLed.setPixelColor(0, ledBaseColor); rgbLed.show(); ledBaseShown = ledBaseColor;
   } else {
     uint32_t c = ledBlinkOn ? ledBlinkColor : C_OFF;
-    rgbLed.setPixelColor(0, c);
-    rgbLed.show();
-    ledBaseShown = c;
+    rgbLed.setPixelColor(0, c); rgbLed.show(); ledBaseShown = c;
   }
 }
-
 bool anyChannelOn() {
   for (int i = 0; i < NUM_CHANNELS; i++) if (channelState[i]) return true;
   return false;
 }
-
 void ledUpdateStatus() {
   uint32_t c;
-  if (WiFi.status() != WL_CONNECTED) {
-    c = C_BLUE;
-  } else if (!ntpSynced) {
-    c = C_YELLOW;
-  } else if (!client.connected()) {
-    c = C_MAGENTA;
-  } else if (anyChannelOn()) {
-    c = C_GREEN;
-  } else if (automationEnabled) {
-    c = C_ORANGE;
-  } else {
-    c = C_DIM_BLUE;
-  }
+  if (!claimed)                                  c = C_YELLOW;
+  else if (WiFi.status() != WL_CONNECTED)        c = C_BLUE;
+  else if (!ntpSynced)                           c = C_YELLOW;
+  else if (!client.connected())                  c = C_MAGENTA;
+  else if (anyChannelOn())                       c = C_GREEN;
+  else if (automationEnabled)                    c = C_ORANGE;
+  else                                           c = C_DIM_BLUE;
   ledSetBase(c);
 }
 
 // ======================================================
-//                     NTP  (IP-based, no DNS)
+//                     NTP
 // ======================================================
-
 time_t getUnixTimestamp() {
   if (!ntpSynced) return 0;
   struct tm timeinfo;
   if (!getLocalTime(&timeinfo)) return 0;
   return mktime(&timeinfo);
 }
-
 void syncNTP() {
-  Serial.println("[NTP] Requesting time (IP-based, no DNS)...");
-  ledSetBase(C_YELLOW);
-
+  Serial.println("[NTP] sync...");
   configTime(gmtOffset_sec, daylightOffset_sec,
-             "216.239.35.0",       // time.google.com
-             "162.159.200.1",      // time.cloudflare.com
-             "129.6.15.28");       // nist.time.gov
-
+             "216.239.35.0", "162.159.200.1", "129.6.15.28");
   struct tm timeinfo;
   for (int attempt = 1; attempt <= 3; attempt++) {
     if (getLocalTime(&timeinfo, 5000)) {
       ntpSynced = true;
-      Serial.printf("[NTP] Sync OK -> %04d-%02d-%02d %02d:%02d:%02d\n",
+      Serial.printf("[NTP] OK %04d-%02d-%02d %02d:%02d:%02d\n",
                     timeinfo.tm_year + 1900, timeinfo.tm_mon + 1, timeinfo.tm_mday,
                     timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec);
       ledBlink(C_GREEN, 2);
       return;
     }
-    Serial.printf("[NTP] Attempt %d failed, retrying...\n", attempt);
     delay(1000);
   }
-  Serial.println("[NTP] FAIL — will retry on next reconnect");
+  Serial.println("[NTP] FAIL, retry later");
   ledBlink(C_RED, 2);
   ntpSynced = false;
 }
 
 // ======================================================
-//                     EEPROM
+//                Identity / topics
 // ======================================================
-
-void saveSettings() {
-  EEPROM.write(ADDR_MAGIC, EEPROM_MAGIC);
-  EEPROM.write(ADDR_AUTOMATION, automationEnabled ? 1 : 0);
-  for (int i = 0; i < NUM_CHANNELS; i++) {
-    int base = ADDR_CHANNEL_BASE + i * 12;
-    EEPROM.put(base + 0, channelOnMs[i]);
-    EEPROM.put(base + 4, channelOffMs[i]);
-    EEPROM.write(base + 8, channelState[i] ? 1 : 0);
-  }
-  EEPROM.commit();
-  Serial.println("[EEPROM] Settings saved");
+void readMac() {
+  uint8_t base[6];
+  esp_efuse_mac_get_default(base);
+  char buf[13];
+  snprintf(buf, sizeof(buf), "%02x%02x%02x%02x%02x%02x",
+           base[0], base[1], base[2], base[3], base[4], base[5]);
+  deviceMac = String(buf);
+  Serial.printf("[ID] MAC=%s type=%s\n", deviceMac.c_str(), deviceType);
 }
 
-void loadSettings() {
-  if (EEPROM.read(ADDR_MAGIC) == EEPROM_MAGIC) {
-    automationEnabled = EEPROM.read(ADDR_AUTOMATION) == 1;
-    for (int i = 0; i < NUM_CHANNELS; i++) {
-      int base = ADDR_CHANNEL_BASE + i * 12;
-      EEPROM.get(base + 0, channelOnMs[i]);
-      EEPROM.get(base + 4, channelOffMs[i]);
-      channelState[i] = EEPROM.read(base + 8) == 1;
-    }
-    Serial.println("[EEPROM] Settings loaded");
-    Serial.printf("  Automation: %s\n", automationEnabled ? "ON" : "OFF");
-    for (int i = 0; i < NUM_CHANNELS; i++) {
-      Serial.printf("  CH%d state=%d on=%lu off=%lu\n",
-                    i + 1, channelState[i] ? 1 : 0,
-                    channelOnMs[i], channelOffMs[i]);
-    }
+void computeTopics() {
+  String base = "adro/devices/" + String(deviceType) + "/" + deviceMac;
+
+  topic_hello     = "adro/unclaimed/" + deviceMac + "/hello";
+  topic_bye       = "adro/unclaimed/" + deviceMac + "/bye";
+  topic_claimed   = base + "/claimed";
+  topic_unclaimed = base + "/unclaimed";
+  topic_status    = base + "/status";
+  topic_telemetry = base + "/telemetry";
+  topic_command   = base + "/command";
+  topic_config    = base + "/config";
+
+  // Legacy topics — only valid once assignedId is set.
+  // Called again after claim is loaded, so these are correct.
+  if (assignedId.length() > 0) {
+    legacy_status    = "farmLab/switchStations/" + assignedId + "/status";
+    legacy_telemetry = "farmLab/switchStations/" + assignedId + "/telemetry";
+    legacy_command   = "farmLab/switchStations/" + assignedId + "/command";
+    legacy_config    = "farmLab/switchStations/" + assignedId + "/config";
   } else {
-    Serial.println("[EEPROM] No saved settings, using defaults");
-    saveSettings();
+    legacy_status    = "";
+    legacy_telemetry = "";
+    legacy_command   = "";
+    legacy_config    = "";
   }
 }
 
 // ======================================================
-//                Broker resolution (pure mDNS)
+//                Broker resolution (mDNS)
 // ======================================================
-
 bool resolveBroker(int attempts = 5, int delayMs = 2000) {
   for (int i = 1; i <= attempts; i++) {
     IPAddress ip;
     if (WiFi.hostByName(mqtt_host, ip)) {
       mqtt_broker_ip = ip;
-      Serial.printf("[NET] %s -> %s (mDNS OK, attempt %d)\n",
+      Serial.printf("[NET] %s -> %s (attempt %d)\n",
                     mqtt_host, ip.toString().c_str(), i);
       return true;
     }
-    Serial.printf("[NET] mDNS resolve %s failed (attempt %d/%d)\n",
-                  mqtt_host, i, attempts);
+    Serial.printf("[NET] resolve %s failed (%d/%d)\n", mqtt_host, i, attempts);
     delay(delayMs);
   }
-  Serial.println("[NET] mDNS FAILED after all attempts — rebooting in 10s");
+  Serial.println("[NET] mDNS FAILED, rebooting in 10s");
   delay(10000);
   ESP.restart();
   return false;
@@ -308,17 +315,12 @@ bool resolveBroker(int attempts = 5, int delayMs = 2000) {
 // ======================================================
 //                     WiFi
 // ======================================================
-
 void setup_wifi() {
   ledSetBase(C_BLUE);
-  Serial.printf("[WiFi] Connecting to SSID=\"%s\"\n", ssid);
-
+  Serial.printf("[WiFi] connecting to %s\n", ssid);
   WiFi.mode(WIFI_STA);
-  if (strlen(password) == 0) {
-    WiFi.begin(ssid);
-  } else {
-    WiFi.begin(ssid, password);
-  }
+  if (strlen(password) == 0) WiFi.begin(ssid);
+  else                       WiFi.begin(ssid, password);
 
   unsigned long startAttempt = millis();
   unsigned long lastPulse = millis();
@@ -327,73 +329,51 @@ void setup_wifi() {
   while (WiFi.status() != WL_CONNECTED) {
     delay(150);
     if (millis() - lastPulse >= 250) {
-      lastPulse = millis();
-      pulseOn = !pulseOn;
-      rgbLed.setPixelColor(0, pulseOn ? C_BLUE : C_OFF);
-      rgbLed.show();
+      lastPulse = millis(); pulseOn = !pulseOn;
+      rgbLed.setPixelColor(0, pulseOn ? C_BLUE : C_OFF); rgbLed.show();
       ledBaseShown = pulseOn ? C_BLUE : C_OFF;
     }
     if (millis() - startAttempt > 30000) {
-      Serial.println("[WiFi] TIMEOUT after 30s — restarting");
+      Serial.println("[WiFi] TIMEOUT, restarting");
       delay(500);
       ESP.restart();
     }
   }
-
-  Serial.printf("[WiFi] Connected! IP=%s RSSI=%d channel=%d MAC=%s\n",
-                WiFi.localIP().toString().c_str(),
-                WiFi.RSSI(), WiFi.channel(),
+  Serial.printf("[WiFi] connected IP=%s RSSI=%d MAC=%s\n",
+                WiFi.localIP().toString().c_str(), WiFi.RSSI(),
                 WiFi.macAddress().c_str());
-  Serial.printf("[NET] Gateway=%s  DNS=%s\n",
-                WiFi.gatewayIP().toString().c_str(),
-                WiFi.dnsIP().toString().c_str());
 
-  if (!MDNS.begin(device_id)) {
-    Serial.println("[mDNS] init FAILED — adro.local won't resolve");
+  if (!MDNS.begin(deviceMac.c_str())) {
+    Serial.println("[mDNS] init FAILED");
   } else {
-    Serial.println("[mDNS] ready (this device = " + String(device_id) + ".local)");
+    Serial.printf("[mDNS] this device = %s.local\n", deviceMac.c_str());
   }
 
   resolveBroker();
-
-  Serial.printf("[NET] Probing %s:%d ...\n",
-                mqtt_broker_ip.toString().c_str(), mqtt_port);
-  WiFiClient probe;
-  unsigned long t0 = millis();
-  if (probe.connect(mqtt_broker_ip, mqtt_port, 3000)) {
-    Serial.printf("[NET] %s:%d REACHABLE (%lu ms)\n",
-                  mqtt_broker_ip.toString().c_str(), mqtt_port, millis() - t0);
-    probe.stop();
-    ledBlink(C_GREEN, 2);
-  } else {
-    Serial.printf("[NET] %s:%d UNREACHABLE after %lu ms\n",
-                  mqtt_broker_ip.toString().c_str(), mqtt_port, millis() - t0);
-    ledBlink(C_RED, 2);
-  }
 }
 
 // ======================================================
-//                Envelope / status payloads
+//                Envelopes
 // ======================================================
-
-String buildEnvelope(JsonDocument& data, bool /*unused*/) {
+String buildEnvelope(JsonDocument& data) {
   DynamicJsonDocument env(512);
   env["ts"]  = (uint32_t)getUnixTimestamp();
   env["seq"] = seqCounter++;
   env["v"]   = currentFirmwareVersion;
-  env["dev"] = device_id;
+  env["dev"] = claimed ? assignedId : deviceMac;
+  env["mac"] = deviceMac;
   env["data"] = data;
   String out;
   serializeJson(env, out);
   return out;
 }
-
 String buildStatusPayload(const char* state) {
   DynamicJsonDocument env(256);
   env["ts"]  = (uint32_t)getUnixTimestamp();
   env["seq"] = seqCounter++;
   env["v"]   = currentFirmwareVersion;
-  env["dev"] = device_id;
+  env["dev"] = claimed ? assignedId : deviceMac;
+  env["mac"] = deviceMac;
   JsonObject data = env.createNestedObject("data");
   data["state"] = state;
   String out;
@@ -402,19 +382,91 @@ String buildStatusPayload(const char* state) {
 }
 
 // ======================================================
-//                     MQTT
+//                Flush helper (before restart)
 // ======================================================
+void flushOutbound(unsigned long windowMs = 1500) {
+  unsigned long t0 = millis();
+  while (millis() - t0 < windowMs) {
+    client.loop();
+    delay(50);
+  }
+}
 
+// ======================================================
+//                     Claim handling
+// ======================================================
+void publishHello() {
+  DynamicJsonDocument doc(256);
+  doc["mac"]   = deviceMac;
+  doc["type"]  = deviceType;
+  doc["fw"]    = currentFirmwareVersion;
+  doc["ip"]    = WiFi.localIP().toString();
+  doc["model"] = "switch-station-v0";
+  doc["capabilities"] = "4ch-ssr";
+  String out;
+  serializeJson(doc, out);
+  client.publish(topic_hello.c_str(), out.c_str(), true);   // retained
+  Serial.printf("[CLAIM] hello published (mac=%s)\n", deviceMac.c_str());
+  lastHello = millis();
+}
+
+void handleClaim(JsonObject d) {
+  String mac = d["mac"] | "";
+  if (mac != deviceMac) return;
+
+  String assigned = d["device_id"] | "";
+  if (assigned.length() == 0) {
+    Serial.println("[CLAIM] missing device_id, ignoring");
+    return;
+  }
+
+  String remoteType = d["type"] | deviceType;
+  if (remoteType != deviceType) {
+    Serial.printf("[CLAIM] WARN type mismatch (remote=%s local=%s)\n",
+                  remoteType.c_str(), deviceType);
+  }
+
+  Serial.printf("[CLAIM] claimed as '%s'\n", assigned.c_str());
+
+  claimed = true;
+  assignedId = assigned;
+  saveSettings();
+  computeTopics();
+
+  client.publish(topic_hello.c_str(), "", true);
+  flushOutbound(1500);
+
+  ledBlink(C_GREEN, 3);
+  delay(500);
+  ESP.restart();
+}
+
+void handleUnclaim(JsonObject d) {
+  String mac = d["mac"] | "";
+  if (mac != deviceMac) return;
+
+  Serial.println("[CLAIM] unclaimed, factory reset");
+  claimed = false;
+  assignedId = "";
+  saveSettings();
+  computeTopics();
+
+  client.publish(topic_hello.c_str(), "", true);
+  client.publish(topic_bye.c_str(), "{}", false);
+  flushOutbound(1200);
+
+  ledBlink(C_RED, 3);
+  delay(500);
+  ESP.restart();
+}
+
+// ======================================================
+//                Command handling
+// ======================================================
 void handleSetChannel(JsonObject d) {
-  if (!d.containsKey("channel")) {
-    Serial.println("[CMD] set_channel missing channel");
-    return;
-  }
-  int ch = d["channel"].as<int>() - 1;   // wire is 1-based, internal is 0-based
-  if (ch < 0 || ch >= NUM_CHANNELS) {
-    Serial.printf("[CMD] invalid channel %d\n", ch + 1);
-    return;
-  }
+  if (!d.containsKey("channel")) return;
+  int ch = d["channel"].as<int>() - 1;
+  if (ch < 0 || ch >= NUM_CHANNELS) return;
   bool on = true;
   if (d.containsKey("state")) {
     String s = d["state"].as<String>();
@@ -424,14 +476,18 @@ void handleSetChannel(JsonObject d) {
   setChannel(ch, on);
   channelTimer[ch] = millis();
   channelAutoOff[ch] = 0;
+
   if (on && d.containsKey("duration_s")) {
     unsigned long dur = d["duration_s"].as<unsigned long>();
-    if (dur > 0) channelAutoOff[ch] = dur * 1000UL;
+    if (dur > 0) {
+      unsigned long ms = dur * 1000UL;
+      if (ms / 1000UL != dur) ms = 3600000UL;  // overflow guard, cap 1h
+      channelAutoOff[ch] = ms;
+    }
   }
-  Serial.printf("[CMD] CH%d -> %s%s\n", ch + 1, on ? "ON" : "OFF",
-                channelAutoOff[ch] ? " (timed)" : "");
   saveSettings();
   ledUpdateStatus();
+  Serial.printf("[CMD] CH%d -> %s\n", ch + 1, on ? "ON" : "OFF");
 }
 
 void handleSetAll(JsonObject d) {
@@ -441,12 +497,9 @@ void handleSetAll(JsonObject d) {
     on = (s == "on" || s == "true" || s == "1");
   }
   for (int i = 0; i < NUM_CHANNELS; i++) {
-    channelState[i] = on;
-    setChannel(i, on);
-    channelTimer[i] = millis();
-    channelAutoOff[i] = 0;
+    channelState[i] = on; setChannel(i, on);
+    channelTimer[i] = millis(); channelAutoOff[i] = 0;
   }
-  Serial.printf("[CMD] ALL -> %s\n", on ? "ON" : "OFF");
   saveSettings();
   ledUpdateStatus();
 }
@@ -454,276 +507,140 @@ void handleSetAll(JsonObject d) {
 void handleAutomation(JsonObject d) {
   if (!d.containsKey("enabled")) return;
   automationEnabled = d["enabled"].as<bool>();
-  Serial.printf("[CMD] Automation: %s\n", automationEnabled ? "ON" : "OFF");
-  if (automationEnabled) {
-    for (int i = 0; i < NUM_CHANNELS; i++) channelTimer[i] = millis();
-  }
+  if (automationEnabled) for (int i = 0; i < NUM_CHANNELS; i++) channelTimer[i] = millis();
   saveSettings();
   ledUpdateStatus();
 }
 
 void mqttCallback(char* topic, byte* payload, unsigned int length) {
   ledBlink(C_WHITE, 1);
+  String topicStr = String(topic);
 
   DynamicJsonDocument env(768);
-  DeserializationError error = deserializeJson(env, payload, length);
-  if (error) {
+  if (deserializeJson(env, payload, length)) {
     Serial.println("[MQTT] JSON parse error");
     ledBlink(C_RED, 2);
     return;
   }
 
-  // Envelope: {ts, seq, v, dev, data:{...}}
-  if (!env.containsKey("data")) {
-    Serial.println("[MQTT] envelope missing data");
+  // Claim / unclaim — flat JSON, no envelope
+  if (topicStr == topic_claimed) {
+    handleClaim(env.as<JsonObject>());
     return;
   }
-  JsonObject d = env["data"].as<JsonObject>();
+  if (topicStr == topic_unclaimed) {
+    handleUnclaim(env.as<JsonObject>());
+    return;
+  }
 
-  String topicStr = String(topic);
+  // Legacy command/config during migration
+  if ((legacy_command.length() > 0 && topicStr == legacy_command) ||
+      (legacy_config.length()  > 0 && topicStr == legacy_config)) {
+    JsonObject d = env["data"].as<JsonObject>();
+    if (topicStr == legacy_command) {
+      const char* action = d["action"] | "";
+      if      (strcmp(action, "set_channel") == 0) handleSetChannel(d);
+      else if (strcmp(action, "set_all")     == 0) handleSetAll(d);
+      else if (strcmp(action, "automation")  == 0) handleAutomation(d);
+      else if (strcmp(action, "reboot")      == 0) { delay(500); ESP.restart(); }
+    }
+    return;
+  }
+
+  // New command/config
+  if (!env.containsKey("data")) return;
+  JsonObject d = env["data"].as<JsonObject>();
 
   if (topicStr == topic_command) {
     const char* action = d["action"] | "";
-    if (strcmp(action, "set_channel") == 0) handleSetChannel(d);
-    else if (strcmp(action, "set_all") == 0) handleSetAll(d);
-    else if (strcmp(action, "automation") == 0) handleAutomation(d);
-    else if (strcmp(action, "reboot") == 0) {
-      Serial.println("[CMD] Reboot");
-      ledSetBase(C_WHITE);
-      delay(500);
-      ESP.restart();
-    } else {
-      Serial.printf("[CMD] unknown action '%s'\n", action);
-    }
-  }
-
-  if (topicStr == topic_config) {
+    if      (strcmp(action, "set_channel") == 0) handleSetChannel(d);
+    else if (strcmp(action, "set_all")     == 0) handleSetAll(d);
+    else if (strcmp(action, "automation")  == 0) handleAutomation(d);
+    else if (strcmp(action, "reboot")      == 0) { delay(500); ESP.restart(); }
+    else Serial.printf("[CMD] unknown '%s'\n", action);
+  } else if (topicStr == topic_config) {
     bool changed = false;
     if (d.containsKey("channel_on_s")) {
       JsonArray a = d["channel_on_s"].as<JsonArray>();
-      for (int i = 0; i < NUM_CHANNELS && i < (int)a.size(); i++) {
+      for (int i = 0; i < NUM_CHANNELS && i < (int)a.size(); i++)
         channelOnMs[i] = (unsigned long)a[i].as<float>() * 1000UL;
-      }
       changed = true;
     }
     if (d.containsKey("channel_off_s")) {
       JsonArray a = d["channel_off_s"].as<JsonArray>();
-      for (int i = 0; i < NUM_CHANNELS && i < (int)a.size(); i++) {
+      for (int i = 0; i < NUM_CHANNELS && i < (int)a.size(); i++)
         channelOffMs[i] = (unsigned long)a[i].as<float>() * 1000UL;
-      }
       changed = true;
     }
-    if (changed) {
-      saveSettings();
-      ledBlink(C_CYAN, 1);
-      Serial.println("[CONFIG] updated");
-    }
+    if (changed) saveSettings();
   }
 }
 
+// ======================================================
+//                MQTT reconnect
+// ======================================================
 void reconnect() {
   int attempt = 0;
   unsigned long lastLog = 0;
 
   while (!client.connected()) {
-    if (attempt > 0 && (attempt % 5 == 0)) {
-      Serial.println("[MQTT] re-resolving adro.local...");
+    if (attempt > 0 && attempt % 5 == 0) {
+      Serial.println("[MQTT] re-resolving adro.local");
       resolveBroker(3, 1000);
       client.setServer(mqtt_broker_ip, mqtt_port);
     }
-
     if (millis() - lastLog > 2000) {
       lastLog = millis();
-      Serial.printf("[MQTT] connecting to %s:%d as %s (attempt %d, heap=%u)\n",
-                    mqtt_broker_ip.toString().c_str(), mqtt_port, device_id,
-                    attempt + 1, ESP.getFreeHeap());
+      Serial.printf("[MQTT] connecting as %s (attempt %d)\n",
+                    deviceMac.c_str(), attempt + 1);
     }
-
     ledSetBase(C_MAGENTA);
 
-    // LWT: retain "offline" on status topic
     String offlinePayload = buildStatusPayload("offline");
 
-    if (client.connect(device_id,
+    // Only set LWT once claimed. Unclaimed devices must not override
+    // the retained hello with an "offline" envelope on disconnect.
+    const char* lwtTopic   = claimed ? topic_status.c_str() : nullptr;
+    const char* lwtPayload = claimed ? offlinePayload.c_str() : nullptr;
+    int         lwtQos     = claimed ? 1 : 0;
+    bool        lwtRetain  = claimed ? true : false;
+
+    if (client.connect(deviceMac.c_str(),
                        nullptr, nullptr,
-                       topic_status.c_str(),
-                       1,       // QoS 1
-                       true,    // retain
-                       offlinePayload.c_str())) {
-      Serial.println("[MQTT] Connected");
-
-      // Publish retained "online" status
-      String onlinePayload = buildStatusPayload("online");
-      client.publish(topic_status.c_str(), onlinePayload.c_str(), true);
-
-      client.subscribe(topic_command.c_str(), 1);
-      client.subscribe(topic_config.c_str(),  1);
-      Serial.println("[MQTT] Subscribed command + config");
+                       lwtTopic, lwtQos, lwtRetain,
+                       lwtPayload)) {
+      Serial.println("[MQTT] connected");
+      if (claimed) {
+        String online = buildStatusPayload("online");
+        client.publish(topic_status.c_str(), online.c_str(), true);
+        client.subscribe(topic_command.c_str(), 1);
+        client.subscribe(topic_config.c_str(),  1);
+        client.subscribe(topic_unclaimed.c_str(), 1);
+        if (legacy_command.length() > 0) client.subscribe(legacy_command.c_str(), 1);
+        if (legacy_config.length()  > 0) client.subscribe(legacy_config.c_str(),  1);
+        Serial.println("[MQTT] subscribed (claimed)");
+      } else {
+        client.subscribe(topic_claimed.c_str(), 1);
+        publishHello();
+        Serial.println("[MQTT] subscribed (unclaimed)");
+      }
       ledBlink(C_CYAN, 2);
-      attempt = 0;
+      return;
     } else {
-      int rc = client.state();
-      Serial.printf("[MQTT] Failed rc=%d\n", rc);
-      long delayMs = min(1000L * (attempt + 1), 30000L);
-      Serial.printf("[MQTT] Reconnect delay %ld ms\n", delayMs);
+      Serial.printf("[MQTT] failed rc=%d\n", client.state());
       ledBlink(C_RED, 1);
-      delay(delayMs);
+      delay(min(1000L * (attempt + 1), 30000L));
       attempt++;
     }
   }
 }
 
 // ======================================================
-//                     OTA
+//                Telemetry (dual-publish during migration)
 // ======================================================
-
-void publishOtaEvent(const char* stage, const char* message = nullptr) {
-  if (!client.connected()) return;
-  DynamicJsonDocument data(256);
-  data["type"]    = "ota";
-  data["stage"]   = stage;
-  if (message) data["message"] = message;
-  String payload = buildEnvelope(data, false);
-  client.publish(topic_telemetry.c_str(), payload.c_str(), false);
-}
-
-void performOTA(const char* binURL, const char* expectedHash = nullptr) {
-  Serial.printf("[OTA] Starting download: %s\n", binURL);
-  ledSetBase(C_CYAN);
-
-  WiFiClient otaClient;
-  HTTPClient http;
-  http.setTimeout(10000);
-  if (!http.begin(otaClient, binURL)) {
-    publishOtaEvent("http_start_failed", binURL);
-    ledBlink(C_RED, 5);
-    return;
-  }
-
-  publishOtaEvent("download_started", binURL);
-  int httpCode = http.GET();
-  if (httpCode != HTTP_CODE_OK) {
-    publishOtaEvent("http_error", String(httpCode).c_str());
-    http.end();
-    ledBlink(C_RED, 5);
-    return;
-  }
-
-  int contentLength = http.getSize();
-  size_t freeSpace = ESP.getFreeSketchSpace() - 0x1000;
-  if (contentLength <= 0 || contentLength > (int)freeSpace) {
-    publishOtaEvent("invalid_size", String(contentLength).c_str());
-    http.end();
-    ledBlink(C_RED, 5);
-    return;
-  }
-
-  if (!Update.begin(contentLength)) {
-    publishOtaEvent("update_begin_failed", nullptr);
-    http.end();
-    ledBlink(C_RED, 5);
-    return;
-  }
-
-  WiFiClient* stream = http.getStreamPtr();
-  size_t written = 0;
-  const size_t bufferSize = 1024;
-  uint8_t buffer[bufferSize];
-  unsigned char hash[32];
-  mbedtls_sha256_context ctx;
-  mbedtls_sha256_init(&ctx);
-  mbedtls_sha256_starts(&ctx, 0);
-
-  while (http.connected() && written < (size_t)contentLength) {
-    size_t available = stream->available();
-    if (available) {
-      size_t toRead = min(available, bufferSize);
-      size_t readBytes = stream->readBytes((char*)buffer, toRead);
-      if (readBytes == 0) break;
-      mbedtls_sha256_update(&ctx, buffer, readBytes);
-      size_t writtenNow = Update.write(buffer, readBytes);
-      if (writtenNow != readBytes) {
-        publishOtaEvent("write_error", nullptr);
-        Update.abort();
-        mbedtls_sha256_free(&ctx);
-        http.end();
-        ledBlink(C_RED, 5);
-        return;
-      }
-      written += writtenNow;
-    }
-    delay(1);
-  }
-
-  mbedtls_sha256_finish(&ctx, hash);
-  mbedtls_sha256_free(&ctx);
-  http.end();
-
-  if (written != (size_t)contentLength) {
-    publishOtaEvent("size_mismatch", nullptr);
-    Update.abort();
-    ledBlink(C_RED, 5);
-    return;
-  }
-
-  if (expectedHash != nullptr && expectedHash[0] != '\0') {
-    char hashStr[65] = {0};
-    for (int i = 0; i < 32; i++) sprintf(hashStr + i * 2, "%02x", hash[i]);
-    char expectedLower[65] = {0};
-    for (int i = 0; expectedHash[i] != '\0' && i < 64; i++)
-      expectedLower[i] = tolower((unsigned char)expectedHash[i]);
-    if (strcasecmp(hashStr, expectedLower) != 0) {
-      publishOtaEvent("hash_mismatch", nullptr);
-      Update.abort();
-      ledBlink(C_RED, 5);
-      return;
-    }
-  }
-
-  if (Update.end(true)) {
-    publishOtaEvent("success", nullptr);
-    ledSetBase(C_GREEN);
-    delay(500);
-    ledBlink(C_GREEN, 3);
-    delay(800);
-    ESP.restart();
-  } else {
-    publishOtaEvent("update_end_failed", nullptr);
-    ledBlink(C_RED, 5);
-  }
-}
-
-void checkForUpdates() {
-  HTTPClient http;
-  http.setTimeout(10000);
-  http.begin(otaManifestURL);
-  int httpCode = http.GET();
-  if (httpCode != HTTP_CODE_OK) { http.end(); return; }
-  String payload = http.getString();
-  http.end();
-
-  DynamicJsonDocument doc(384);
-  if (deserializeJson(doc, payload)) return;
-
-  const char* newVersion = doc["version"];
-  const char* binURL     = doc["firmware_url"];
-  const char* sha256     = doc["sha256"];
-
-  if (newVersion == nullptr || binURL == nullptr) return;
-
-  if (strcmp(newVersion, currentFirmwareVersion) != 0) {
-    Serial.printf("[OTA] New version %s (current %s)\n",
-                  newVersion, currentFirmwareVersion);
-    delay(300);
-    performOTA(binURL, sha256);
-  }
-}
-
-// ======================================================
-//                     TELEMETRY
-// ======================================================
-
 void publishTelemetry() {
+  if (!claimed) return;
+
   DynamicJsonDocument data(512);
   data["wifi"]       = (WiFi.status() == WL_CONNECTED);
   data["mqtt"]       = client.connected();
@@ -733,86 +650,125 @@ void publishTelemetry() {
   data["broker_ip"]  = mqtt_broker_ip.toString();
   data["ntp_synced"] = ntpSynced;
   data["automation"] = automationEnabled;
-
   JsonArray ch = data.createNestedArray("channels");
   for (int i = 0; i < NUM_CHANNELS; i++) {
     JsonObject o = ch.createNestedObject();
-    o["id"]     = i + 1;
-    o["state"]  = channelState[i];
-    o["on_s"]   = channelOnMs[i] / 1000.0;
-    o["off_s"]  = channelOffMs[i] / 1000.0;
+    o["id"]    = i + 1;
+    o["state"] = channelState[i];
+    o["on_s"]  = channelOnMs[i] / 1000.0;
+    o["off_s"] = channelOffMs[i] / 1000.0;
   }
-
-  String payload = buildEnvelope(data, false);
+  String payload = buildEnvelope(data);
   client.publish(topic_telemetry.c_str(), payload.c_str(), false);
+  if (legacy_telemetry.length() > 0) {
+    client.publish(legacy_telemetry.c_str(), payload.c_str(), false);
+  }
   ledBlink(C_GREEN, 1);
 }
 
 // ======================================================
-//                  AUTOMATION LOGIC
+//                Automation logic
 // ======================================================
-
 void updateChannels() {
   unsigned long now = millis();
-
   for (int i = 0; i < NUM_CHANNELS; i++) {
-    // Timed auto-off (one-shot)
     if (channelState[i] && channelAutoOff[i] > 0) {
       if (now - channelTimer[i] >= channelAutoOff[i]) {
-        channelState[i] = false;
-        setChannel(i, false);
-        channelAutoOff[i] = 0;
-        channelTimer[i] = now;
-        Serial.printf("[AUTO] CH%d timed OFF\n", i + 1);
+        channelState[i] = false; setChannel(i, false);
+        channelAutoOff[i] = 0; channelTimer[i] = now;
         saveSettings();
       }
       continue;
     }
-
-    // Continuous automation
     if (automationEnabled) {
       unsigned long period = channelState[i] ? channelOnMs[i] : channelOffMs[i];
       if (now - channelTimer[i] >= period) {
         channelState[i] = !channelState[i];
         setChannel(i, channelState[i]);
         channelTimer[i] = now;
-        Serial.printf("[AUTO] CH%d -> %s\n", i + 1, channelState[i] ? "ON" : "OFF");
       }
     }
   }
 }
 
-// ======================================================
-//                     REBOOT
-// ======================================================
-
 void checkAndReboot() {
+  if (!claimed) return;                        // never auto-reboot unclaimed
   if ((millis() - startupTime) >= rebootInterval) {
-    Serial.println("[SYS] Scheduled reboot");
-    ledSetBase(C_WHITE);
     delay(500);
     ESP.restart();
   }
 }
 
 // ======================================================
-//                     SETUP
+//                OTA
 // ======================================================
+void performOTA(const char* binURL, const char* expectedHash = nullptr) {
+  Serial.printf("[OTA] %s\n", binURL);
+  WiFiClient otaClient;
+  HTTPClient http;
+  http.setTimeout(10000);
+  if (!http.begin(otaClient, binURL)) return;
+  int httpCode = http.GET();
+  if (httpCode != HTTP_CODE_OK) { http.end(); return; }
+  int contentLength = http.getSize();
+  if (contentLength <= 0 || !Update.begin(contentLength)) { http.end(); return; }
+  WiFiClient* stream = http.getStreamPtr();
+  size_t written = 0;
+  uint8_t buffer[1024];
+  while (http.connected() && written < (size_t)contentLength) {
+    size_t avail = stream->available();
+    if (avail) {
+      size_t r = stream->readBytes((char*)buffer, min(avail, sizeof(buffer)));
+      if (!r) break;
+      if (Update.write(buffer, r) != r) { Update.abort(); http.end(); return; }
+      written += r;
+    }
+    delay(1);
+  }
+  http.end();
+  if (written == (size_t)contentLength && Update.end(true)) {
+    delay(500); ESP.restart();
+  }
+}
 
+void checkForUpdates() {
+  if (!claimed) return;
+  String url = String(otaManifestBase) + "/" + assignedId + "/manifest.json";
+  HTTPClient http;
+  http.setTimeout(10000);
+  http.begin(url);
+  if (http.GET() != HTTP_CODE_OK) { http.end(); return; }
+  String payload = http.getString();
+  http.end();
+  DynamicJsonDocument doc(384);
+  if (deserializeJson(doc, payload)) return;
+  const char* newVersion = doc["version"];
+  const char* binURL     = doc["firmware_url"];
+  const char* sha256     = doc["sha256"];
+  if (newVersion && binURL && strcmp(newVersion, currentFirmwareVersion) != 0) {
+    performOTA(binURL, sha256);
+  }
+}
+
+// ======================================================
+//                setup / loop
+// ======================================================
 void setup() {
   Serial.begin(115200);
   delay(200);
-
   ledBegin();
   ledSetBase(C_WHITE);
   ledBlink(C_WHITE, 2);
 
-  Serial.printf("[INFO] Firmware version: %s\n", currentFirmwareVersion);
-  Serial.printf("[INFO] OTA manifest URL: %s\n", otaManifestURL);
-  Serial.printf("[INFO] MQTT host: %s:%d\n", mqtt_host, mqtt_port);
+  readMac();
 
   EEPROM.begin(EEPROM_SIZE);
   loadSettings();
+
+  computeTopics();
+
+  Serial.printf("[BOOT] fw=%s claimed=%d id='%s'\n",
+                currentFirmwareVersion, claimed, assignedId.c_str());
 
   for (int i = 0; i < NUM_CHANNELS; i++) {
     pinMode(CHANNEL_PINS[i], OUTPUT);
@@ -823,44 +779,35 @@ void setup() {
   setup_wifi();
   syncNTP();
 
-  topic_telemetry = "adro/" + String(site_id) + "/switch/" + String(device_id) + "/telemetry";
-  topic_status    = "adro/" + String(site_id) + "/switch/" + String(device_id) + "/status";
-  topic_command   = "adro/" + String(site_id) + "/switch/" + String(device_id) + "/command";
-  topic_config    = "adro/" + String(site_id) + "/switch/" + String(device_id) + "/config";
-
-  Serial.printf("[BOOT] broker=%s:%d\n",
-                mqtt_broker_ip.toString().c_str(), mqtt_port);
   client.setServer(mqtt_broker_ip, mqtt_port);
   client.setCallback(mqttCallback);
   client.setKeepAlive(60);
 
   reconnect();
-  publishTelemetry();
+
+  if (claimed) publishTelemetry();
 
   startupTime = millis();
   for (int i = 0; i < NUM_CHANNELS; i++) channelTimer[i] = millis();
   ledUpdateStatus();
 }
 
-// ======================================================
-//                     LOOP
-// ======================================================
-
 void loop() {
   if (!client.connected()) reconnect();
   client.loop();
 
-  updateChannels();
-
-  if (millis() - lastTelemetry >= telemetryInterval) {
-    lastTelemetry = millis();
-    if (!client.connected()) reconnect();
-    publishTelemetry();
-  }
-
-  if (millis() - lastOtaCheck >= otaInterval) {
-    lastOtaCheck = millis();
-    checkForUpdates();
+  if (!claimed) {
+    if (millis() - lastHello >= helloInterval) publishHello();
+  } else {
+    updateChannels();
+    if (millis() - lastTelemetry >= telemetryInterval) {
+      lastTelemetry = millis();
+      publishTelemetry();
+    }
+    if (millis() - lastOtaCheck >= otaInterval) {
+      lastOtaCheck = millis();
+      checkForUpdates();
+    }
   }
 
   checkAndReboot();

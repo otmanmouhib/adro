@@ -46,21 +46,17 @@ notifications true
 notification_topic local/hub/bridge/status
 restart_timeout 30
 
-# ── Topic mapping (MAC-namespaced, loop-free) ───────────
+# ── Topic mapping ───────────────────────────────────────
 # Syntax: topic <pattern> <dir> <qos> <local-prefix> <remote-prefix>
-#
 #   out → strip <local-prefix>, prepend <remote-prefix>, publish on remote
 #   in  → strip <remote-prefix>, prepend <local-prefix>, publish locally
 #
-# Two cloud-side namespaces, never overlapping:
-#   hubs/<hub_mac>/...   ← mirror of this hub's local farmLab/ tree (out)
-#   cmd/<hub_mac>/...    ← commands injected toward this hub (in)
-#
-# Because nothing matches hubs/# inbound and nothing matches cmd/# outbound,
-# a message can never bounce between the two brokers.
-#
-# Local commands work too: firmware publishes/subscribes to farmLab/cmd/...
-# directly. Any local publish is mirrored up under hubs/<mac>/farmLab/cmd/...
+# Both roots are mirrored during the farmLab → adro migration. Remove the
+# farmLab rule once every device has been reflashed to the adro/ tree.
 
 topic farmLab/# out 0 "" "hubs/${HUB_MAC}/"
+topic adro/#    out 0 "" "hubs/${HUB_MAC}/"
+
+# Cloud → hub commands: cloud publishes under cmd/<hub_mac>/...
+# The bridge strips that prefix and delivers the remainder locally as-is.
 topic cmd/${HUB_MAC}/# in 0 "" "cmd/${HUB_MAC}/"
