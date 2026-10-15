@@ -19,12 +19,10 @@ export default function ClaimDialog({ device, onClose, onClaimed }) {
 
       await new Promise((resolve, reject) => {
         client.on("connect", () => {
+          // Firmware expects a flat payload: { mac, type }
           client.publish(
-            claimTopic(device.id),
-            JSON.stringify({
-              name,
-              hub: process.env.NEXT_PUBLIC_ADRO_TITLE || "Adro Hub",
-            }),
+            claimTopic(device.type, device.mac),
+            JSON.stringify({ mac: device.mac, type: device.type }),
             { qos: 1 },
             (err) => (err ? reject(err) : resolve()),
           );
@@ -32,7 +30,7 @@ export default function ClaimDialog({ device, onClose, onClaimed }) {
         client.on("error", reject);
       });
 
-      onClaimed({ ...device, name, claimed: true });
+      onClaimed({ ...device, name, status: "claimed" });
     } catch (err) {
       setError(err.message);
       setBusy(false);
@@ -51,9 +49,15 @@ export default function ClaimDialog({ device, onClose, onClaimed }) {
         onClick={(e) => e.stopPropagation()}
       >
         <h2 className="mb-1 text-lg font-semibold">Claim device</h2>
-        <p className="mb-4 text-sm text-zinc-500">
-          {device.name || device.id} · {device.model || "Unknown model"}
+        <p className="mb-1 text-sm text-zinc-500">
+          {device.model || device.type} ·{" "}
+          <span className="font-mono text-xs">{device.mac}</span>
         </p>
+        {device.capabilities && (
+          <p className="mb-4 text-xs text-zinc-400">
+            {device.capabilities}
+          </p>
+        )}
 
         <form onSubmit={submit} className="flex flex-col gap-4">
           <label className="flex flex-col gap-1.5 text-sm">
@@ -63,7 +67,7 @@ export default function ClaimDialog({ device, onClose, onClaimed }) {
               value={name}
               onChange={(e) => setName(e.target.value)}
               required
-              placeholder="e.g. Barn sensor 1"
+              placeholder="e.g. Barn switch"
               className="rounded-md border border-zinc-300 bg-transparent px-3 py-2 outline-none focus:border-zinc-900 dark:border-zinc-700 dark:focus:border-zinc-100"
             />
           </label>
