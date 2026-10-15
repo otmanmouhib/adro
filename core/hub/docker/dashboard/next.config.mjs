@@ -1,16 +1,22 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-	/* config options here */
-	cacheComponents: true,
-	partialPrefetching: true,
-	turbopack: {
-		rules: {
-			"*.css": {
-				loaders: ["@tailwindcss/turbopack"],
-				as: "*.css",
-			},
-		},
-	},
+  cacheComponents: true,
+  partialPrefetching: true,
+  allowedDevOrigins: [
+    "adro.local",
+    "adro.local:80",
+    "adro.local:8080",
+    "dashboard.local",
+    "localhost",
+  ],
+  turbopack: {
+    rules: {
+      "*.css": {
+        loaders: ["@tailwindcss/turbopack"],
+        as: "*.css",
+      },
+    },
+  },
 };
 
 export default nextConfig;
