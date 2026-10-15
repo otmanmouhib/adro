@@ -54,7 +54,6 @@ const char* password = "";
 // ==== Identity ====
 String deviceMac;                  // "083af252d1dc", no colons, lowercase
 const char* deviceType = "switch"; // fixed for this firmware
-String assignedId;                 // e.g. "switchstation01", set after claim
 bool   claimed = false;
 
 // ==== Topics ====
@@ -66,12 +65,6 @@ String topic_status;     // adro/devices/switch/<mac>/status
 String topic_telemetry;  // adro/devices/switch/<mac>/telemetry
 String topic_command;    // adro/devices/switch/<mac>/command
 String topic_config;     // adro/devices/switch/<mac>/config
-
-// Legacy topics (dual-publish during migration; drop once fleet is migrated)
-String legacy_status;
-String legacy_telemetry;
-String legacy_command;
-String legacy_config;
 
 WiFiClient espClient;
 PubSubClient client(espClient);
@@ -94,17 +87,12 @@ uint32_t seqCounter = 0;
 #define ADDR_MAGIC        0
 #define ADDR_AUTOMATION   1
 #define ADDR_CLAIMED      2
-#define ADDR_ASSIGNED     3            // 24 bytes
-#define ADDR_CHANNEL_BASE 32           // 4 * 12 = 48 bytes -> ends at 80
+#define ADDR_CHANNEL_BASE 8    // 4 * 12 = 48 bytes -> ends at 56
 
 void saveSettings() {
   EEPROM.write(ADDR_MAGIC, EEPROM_MAGIC);
   EEPROM.write(ADDR_AUTOMATION, automationEnabled ? 1 : 0);
   EEPROM.write(ADDR_CLAIMED, claimed ? 1 : 0);
-
-  char buf[24] = {0};
-  assignedId.toCharArray(buf, sizeof(buf));
-  for (int i = 0; i < 24; i++) EEPROM.write(ADDR_ASSIGNED + i, (uint8_t)buf[i]);
 
   for (int i = 0; i < NUM_CHANNELS; i++) {
     int base = ADDR_CHANNEL_BASE + i * 12;
@@ -121,18 +109,14 @@ void loadSettings() {
     automationEnabled = EEPROM.read(ADDR_AUTOMATION) == 1;
     claimed           = EEPROM.read(ADDR_CLAIMED)    == 1;
 
-    char buf[24] = {0};
-    for (int i = 0; i < 24; i++) buf[i] = (char)EEPROM.read(ADDR_ASSIGNED + i);
-    assignedId = String(buf);
-
     for (int i = 0; i < NUM_CHANNELS; i++) {
       int base = ADDR_CHANNEL_BASE + i * 12;
       EEPROM.get(base + 0, channelOnMs[i]);
       EEPROM.get(base + 4, channelOffMs[i]);
       channelState[i] = EEPROM.read(base + 8) == 1;
     }
-    Serial.printf("[EEPROM] loaded: claimed=%d id='%s' automation=%d\n",
-                  claimed, assignedId.c_str(), automationEnabled);
+    Serial.printf("[EEPROM] loaded: claimed=%d automation=%d\n",
+                  claimed, automationEnabled);
   } else {
     Serial.println("[EEPROM] no valid data, defaults");
     saveSettings();
@@ -275,20 +259,6 @@ void computeTopics() {
   topic_telemetry = base + "/telemetry";
   topic_command   = base + "/command";
   topic_config    = base + "/config";
-
-  // Legacy topics — only valid once assignedId is set.
-  // Called again after claim is loaded, so these are correct.
-  if (assignedId.length() > 0) {
-    legacy_status    = "farmLab/switchStations/" + assignedId + "/status";
-    legacy_telemetry = "farmLab/switchStations/" + assignedId + "/telemetry";
-    legacy_command   = "farmLab/switchStations/" + assignedId + "/command";
-    legacy_config    = "farmLab/switchStations/" + assignedId + "/config";
-  } else {
-    legacy_status    = "";
-    legacy_telemetry = "";
-    legacy_command   = "";
-    legacy_config    = "";
-  }
 }
 
 // ======================================================
@@ -357,11 +327,11 @@ void setup_wifi() {
 // ======================================================
 String buildEnvelope(JsonDocument& data) {
   DynamicJsonDocument env(512);
-  env["ts"]  = (uint32_t)getUnixTimestamp();
-  env["seq"] = seqCounter++;
-  env["v"]   = currentFirmwareVersion;
-  env["dev"] = claimed ? assignedId : deviceMac;
-  env["mac"] = deviceMac;
+  env["ts"]   = (uint32_t)getUnixTimestamp();
+  env["seq"]  = seqCounter++;
+  env["v"]    = currentFirmwareVersion;
+  env["mac"]  = deviceMac;
+  env["type"] = deviceType;
   env["data"] = data;
   String out;
   serializeJson(env, out);
@@ -369,11 +339,11 @@ String buildEnvelope(JsonDocument& data) {
 }
 String buildStatusPayload(const char* state) {
   DynamicJsonDocument env(256);
-  env["ts"]  = (uint32_t)getUnixTimestamp();
-  env["seq"] = seqCounter++;
-  env["v"]   = currentFirmwareVersion;
-  env["dev"] = claimed ? assignedId : deviceMac;
-  env["mac"] = deviceMac;
+  env["ts"]   = (uint32_t)getUnixTimestamp();
+  env["seq"]  = seqCounter++;
+  env["v"]    = currentFirmwareVersion;
+  env["mac"]  = deviceMac;
+  env["type"] = deviceType;
   JsonObject data = env.createNestedObject("data");
   data["state"] = state;
   String out;
@@ -405,7 +375,7 @@ void publishHello() {
   doc["capabilities"] = "4ch-ssr";
   String out;
   serializeJson(doc, out);
-  client.publish(topic_hello.c_str(), out.c_str(), true);   // retained
+  client.publish(topic_hello.c_str(), out.c_str(), true);
   Serial.printf("[CLAIM] hello published (mac=%s)\n", deviceMac.c_str());
   lastHello = millis();
 }
@@ -414,22 +384,16 @@ void handleClaim(JsonObject d) {
   String mac = d["mac"] | "";
   if (mac != deviceMac) return;
 
-  String assigned = d["device_id"] | "";
-  if (assigned.length() == 0) {
-    Serial.println("[CLAIM] missing device_id, ignoring");
+  String remoteType = d["type"] | "";
+  if (remoteType.length() > 0 && remoteType != deviceType) {
+    Serial.printf("[CLAIM] refusing: type mismatch (remote=%s local=%s)\n",
+                  remoteType.c_str(), deviceType);
     return;
   }
 
-  String remoteType = d["type"] | deviceType;
-  if (remoteType != deviceType) {
-    Serial.printf("[CLAIM] WARN type mismatch (remote=%s local=%s)\n",
-                  remoteType.c_str(), deviceType);
-  }
-
-  Serial.printf("[CLAIM] claimed as '%s'\n", assigned.c_str());
+  Serial.printf("[CLAIM] claimed (mac=%s)\n", deviceMac.c_str());
 
   claimed = true;
-  assignedId = assigned;
   saveSettings();
   computeTopics();
 
@@ -447,7 +411,6 @@ void handleUnclaim(JsonObject d) {
 
   Serial.println("[CLAIM] unclaimed, factory reset");
   claimed = false;
-  assignedId = "";
   saveSettings();
   computeTopics();
 
@@ -533,21 +496,7 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
     return;
   }
 
-  // Legacy command/config during migration
-  if ((legacy_command.length() > 0 && topicStr == legacy_command) ||
-      (legacy_config.length()  > 0 && topicStr == legacy_config)) {
-    JsonObject d = env["data"].as<JsonObject>();
-    if (topicStr == legacy_command) {
-      const char* action = d["action"] | "";
-      if      (strcmp(action, "set_channel") == 0) handleSetChannel(d);
-      else if (strcmp(action, "set_all")     == 0) handleSetAll(d);
-      else if (strcmp(action, "automation")  == 0) handleAutomation(d);
-      else if (strcmp(action, "reboot")      == 0) { delay(500); ESP.restart(); }
-    }
-    return;
-  }
-
-  // New command/config
+  // Command / config
   if (!env.containsKey("data")) return;
   JsonObject d = env["data"].as<JsonObject>();
 
@@ -597,9 +546,6 @@ void reconnect() {
     ledSetBase(C_MAGENTA);
 
     String offlinePayload = buildStatusPayload("offline");
-
-    // Only set LWT once claimed. Unclaimed devices must not override
-    // the retained hello with an "offline" envelope on disconnect.
     const char* lwtTopic   = claimed ? topic_status.c_str() : nullptr;
     const char* lwtPayload = claimed ? offlinePayload.c_str() : nullptr;
     int         lwtQos     = claimed ? 1 : 0;
@@ -616,8 +562,6 @@ void reconnect() {
         client.subscribe(topic_command.c_str(), 1);
         client.subscribe(topic_config.c_str(),  1);
         client.subscribe(topic_unclaimed.c_str(), 1);
-        if (legacy_command.length() > 0) client.subscribe(legacy_command.c_str(), 1);
-        if (legacy_config.length()  > 0) client.subscribe(legacy_config.c_str(),  1);
         Serial.println("[MQTT] subscribed (claimed)");
       } else {
         client.subscribe(topic_claimed.c_str(), 1);
@@ -636,7 +580,7 @@ void reconnect() {
 }
 
 // ======================================================
-//                Telemetry (dual-publish during migration)
+//                Telemetry
 // ======================================================
 void publishTelemetry() {
   if (!claimed) return;
@@ -660,9 +604,6 @@ void publishTelemetry() {
   }
   String payload = buildEnvelope(data);
   client.publish(topic_telemetry.c_str(), payload.c_str(), false);
-  if (legacy_telemetry.length() > 0) {
-    client.publish(legacy_telemetry.c_str(), payload.c_str(), false);
-  }
   ledBlink(C_GREEN, 1);
 }
 
@@ -692,7 +633,7 @@ void updateChannels() {
 }
 
 void checkAndReboot() {
-  if (!claimed) return;                        // never auto-reboot unclaimed
+  if (!claimed) return;
   if ((millis() - startupTime) >= rebootInterval) {
     delay(500);
     ESP.restart();
@@ -700,9 +641,9 @@ void checkAndReboot() {
 }
 
 // ======================================================
-//                OTA
+//                OTA (type-based, fleet-wide)
 // ======================================================
-void performOTA(const char* binURL, const char* expectedHash = nullptr) {
+void performOTA(const char* binURL) {
   Serial.printf("[OTA] %s\n", binURL);
   WiFiClient otaClient;
   HTTPClient http;
@@ -733,20 +674,25 @@ void performOTA(const char* binURL, const char* expectedHash = nullptr) {
 
 void checkForUpdates() {
   if (!claimed) return;
-  String url = String(otaManifestBase) + "/" + assignedId + "/manifest.json";
+
+  String url = String(otaManifestBase) + "/" + String(deviceType) + "/manifest.json";
+
   HTTPClient http;
   http.setTimeout(10000);
   http.begin(url);
   if (http.GET() != HTTP_CODE_OK) { http.end(); return; }
   String payload = http.getString();
   http.end();
+
   DynamicJsonDocument doc(384);
   if (deserializeJson(doc, payload)) return;
+
   const char* newVersion = doc["version"];
   const char* binURL     = doc["firmware_url"];
-  const char* sha256     = doc["sha256"];
+
   if (newVersion && binURL && strcmp(newVersion, currentFirmwareVersion) != 0) {
-    performOTA(binURL, sha256);
+    Serial.printf("[OTA] fleet update %s -> %s\n", currentFirmwareVersion, newVersion);
+    performOTA(binURL);
   }
 }
 
@@ -767,8 +713,8 @@ void setup() {
 
   computeTopics();
 
-  Serial.printf("[BOOT] fw=%s claimed=%d id='%s'\n",
-                currentFirmwareVersion, claimed, assignedId.c_str());
+  Serial.printf("[BOOT] fw=%s claimed=%d mac=%s\n",
+                currentFirmwareVersion, claimed, deviceMac.c_str());
 
   for (int i = 0; i < NUM_CHANNELS; i++) {
     pinMode(CHANNEL_PINS[i], OUTPUT);
