@@ -1,0 +1,26 @@
+{
+	"name": "dashboard",
+	"version": "0.1.0",
+	"private": true,
+	"scripts": {
+		"dev": "next dev",
+		"build": "next build",
+		"start": "next start",
+		"lint": "biome check",
+		"lint:fix": "biome check --write",
+		"format": "biome format --write"
+	},
+	"dependencies": {
+		"next": "16.4.1",
+		"react": "19.3.0",
+		"react-dom": "19.3.0"
+	},
+	"devDependencies": {
+		"@biomejs/biome": "^2.5.15",
+		"@tailwindcss/turbopack": "^4",
+		"tailwindcss": "^4"
+	},
+	"allowScripts": {
+		"unrs-resolver@1.12.2": true
+	}
+}

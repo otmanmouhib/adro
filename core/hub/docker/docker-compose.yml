@@ -14,8 +14,22 @@ services:
     volumes:
       - /opt/adro-data/mosquitto:/mosquitto/data
       - /opt/adro-data/mosquitto-log:/mosquitto/log
-      - /sys:/host-sys:ro
+      - /sys/class/net:/host-sys/class/net:ro
+    networks:
+      - adro-net
 
+  dashboard:
+    build: ./dashboard
+    image: adro/dashboard-hub:0.1.0
+    container_name: adro-dashboard
+    restart: unless-stopped
+    environment:
+      NEXT_PUBLIC_ADRO_BROKER_URL: "ws://adro.local:9001"
+      NEXT_PUBLIC_ADRO_TITLE: "Adro Hub"
+    ports:
+      - "80:3000"
+    depends_on:
+      - mosquitto
     networks:
       - adro-net
 
