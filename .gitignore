@@ -63,3 +63,4 @@ logs/
 .pio/
 .pioenvs/
 .piolibdeps/
+.pio/
