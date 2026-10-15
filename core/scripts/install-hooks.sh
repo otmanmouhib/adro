@@ -16,10 +16,10 @@ chmod +x "$HOOK_DIR/pre-commit"
 
 cat > "$HOOK_DIR/pre-push" <<'INNER'
 #!/bin/bash
-exec bash scripts/audit.sh
+exec bash core/scripts/audit.sh
 INNER
 chmod +x "$HOOK_DIR/pre-push"
 
 echo "✔ Hooks installed in $HOOK_DIR"
 echo "  pre-commit → blocks commits on master"
-echo "  pre-push   → runs scripts/audit.sh before every push"
+echo "  pre-push   → runs core/scripts/audit.sh before every push"
