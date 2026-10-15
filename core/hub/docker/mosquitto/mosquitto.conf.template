@@ -18,7 +18,7 @@ persistence_location /mosquitto/data/
 
 # ── Logging ─────────────────────────────────────────────
 log_dest stdout
-log_dest file /mosquitto/log/mosquitto.log
+# log_dest file /mosquitto/log/mosquitto.log   # use `docker logs` instead
 log_type all
 log_timestamp true
 log_timestamp_format %Y-%m-%dT%H:%M:%S
@@ -28,11 +28,39 @@ max_queued_bytes 524288000
 max_queued_messages 50000
 persistent_client_expiration 2d
 
-# BRIDGE_START — everything below only included if bridge credentials are set
+# BRIDGE_START
+# Everything below is only rendered when BRIDGE_USERNAME and BRIDGE_PASSWORD
+# are set in site.env. Otherwise docker-entrypoint.sh truncates the file here.
+
 connection bridge-to-remote
 address ${BRIDGE_REMOTE_HOST}:${BRIDGE_REMOTE_PORT}
 remote_username ${BRIDGE_USERNAME}
 remote_password ${BRIDGE_PASSWORD}
 remote_clientid ${BRIDGE_CLIENT_ID}
 cleansession false
-topic # both 0 "" ""
+
+# ── Bridge health ───────────────────────────────────────
+try_private true
+bridge_protocol_version mqttv311
+notifications true
+notification_topic local/hub/bridge/status
+restart_timeout 30
+
+# ── Topic mapping (MAC-namespaced, loop-free) ───────────
+# Syntax: topic <pattern> <dir> <qos> <local-prefix> <remote-prefix>
+#
+#   out → strip <local-prefix>, prepend <remote-prefix>, publish on remote
+#   in  → strip <remote-prefix>, prepend <local-prefix>, publish locally
+#
+# Two cloud-side namespaces, never overlapping:
+#   hubs/<hub_mac>/...   ← mirror of this hub's local farmLab/ tree (out)
+#   cmd/<hub_mac>/...    ← commands injected toward this hub (in)
+#
+# Because nothing matches hubs/# inbound and nothing matches cmd/# outbound,
+# a message can never bounce between the two brokers.
+#
+# Local commands work too: firmware publishes/subscribes to farmLab/cmd/...
+# directly. Any local publish is mirrored up under hubs/<mac>/farmLab/cmd/...
+
+topic farmLab/# out 0 "" "hubs/${HUB_MAC}/"
+topic cmd/${HUB_MAC}/# in 0 "" "cmd/${HUB_MAC}/"
