@@ -1,5 +1,12 @@
-const BROKER_URL =
-  process.env.NEXT_PUBLIC_ADRO_BROKER_URL || "ws://adro.local:9001";
+function getBrokerUrl() {
+  // Server-side (SSR) — no window
+  if (typeof window === "undefined") {
+    return process.env.NEXT_PUBLIC_ADRO_BROKER_URL || "ws://adro.local:9001";
+  }
+  // Client-side — use whatever host the browser is on
+  const proto = window.location.protocol === "https:" ? "wss" : "ws";
+  return `${proto}://${window.location.hostname}:9001`;
+}
 
 export const HELLO_TOPIC = "adro/unclaimed/+/hello";
 export const STATUS_TOPIC = "adro/devices/+/+/status";
@@ -21,8 +28,6 @@ export function commandTopic(deviceType, mac) {
 }
 
 export function parseTopic(topic) {
-  // adro/unclaimed/<mac>/hello
-  // adro/devices/<type>/<mac>/<suffix>
   const parts = topic.split("/");
   if (parts[0] !== "adro") return null;
 
@@ -31,7 +36,7 @@ export function parseTopic(topic) {
   }
   if (parts[1] === "devices" && parts.length === 5) {
     return {
-      kind: parts[4],       // status | telemetry | claimed | unclaimed | command | config
+      kind: parts[4],
       type: parts[2],
       mac: parts[3],
     };
@@ -41,5 +46,5 @@ export function parseTopic(topic) {
 
 export async function connectMqtt() {
   const mqtt = (await import("mqtt")).default;
-  return mqtt.connect(BROKER_URL);
+  return mqtt.connect(getBrokerUrl());
 }
