@@ -9,14 +9,17 @@ services:
     env_file:
       - /opt/adro-config/site.env
     ports:
-      - "1883:1883"     # MQTT (LAN)
-      - "9001:9001"     # MQTT over WebSocket
+      - "1883:1883"
+      - "9001:9001"
     volumes:
       - /opt/adro-data/mosquitto:/mosquitto/data
       - /opt/adro-data/mosquitto-log:/mosquitto/log
+      - /sys:/host-sys:ro
+
     networks:
       - adro-net
 
 networks:
-  default:
+  adro-net:
     name: adro-net
+    driver: bridge
