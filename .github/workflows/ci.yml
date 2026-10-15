@@ -14,9 +14,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: bash scripts/check-no-nested-git.sh
-      - run: bash scripts/check-no-tracked-ignored.sh
-      - run: bash scripts/check-version-consistency.sh
+      - run: bash core/scripts/check-no-nested-git.sh
+      - run: bash core/scripts/check-no-tracked-ignored.sh
+      - run: bash core/scripts/check-version-consistency.sh
 
   yaml-validate:
     runs-on: ubuntu-latest
@@ -26,31 +26,31 @@ jobs:
         with:
           python-version: '3.11'
       - run: pip install pyyaml
-      - run: bash scripts/check-yaml.sh
+      - run: bash core/scripts/check-yaml.sh
 
   audit-hardware:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: bash scripts/audit-hardware.sh
+      - run: bash core/scripts/audit-hardware.sh
 
   audit-firmware:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: bash scripts/audit-firmware.sh
+      - run: bash core/scripts/audit-firmware.sh
 
   audit-hub:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: bash scripts/audit-hub.sh
+      - run: bash core/scripts/audit-hub.sh
 
   audit-cloud:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: bash scripts/audit-cloud.sh
+      - run: bash core/scripts/audit-cloud.sh
 
   firmware-build:
     runs-on: ubuntu-latest
@@ -60,7 +60,7 @@ jobs:
         with:
           python-version: '3.11'
       - run: pip install platformio
-      - run: bash scripts/build-firmware.sh
+      - run: bash core/scripts/build-firmware.sh
 
   secret-scan:
     runs-on: ubuntu-latest

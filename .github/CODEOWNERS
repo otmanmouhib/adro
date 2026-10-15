@@ -1,0 +1,7 @@
+# Protect proprietary enterprise code
+/enterprise/ @otmanmouhib
+
+# Optionally protect repo-level config
+/.github/ @otmanmouhib
+/LICENSE @otmanmouhib
+/LICENSE-EE @otmanmouhib

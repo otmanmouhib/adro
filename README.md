@@ -1,6 +1,6 @@
 # Adro Platform
 
-Open smart farming platform for hydroponic and water quality automation.
+Open-core smart farming platform for hydroponic and water quality automation.
 
 ## Overview
 Adro is a modular IoT platform for precision agriculture:
@@ -8,32 +8,54 @@ Adro is a modular IoT platform for precision agriculture:
 - **Local Control Hub** (Raspberry Pi) for offline automation
 - **Cloud Gateway** (mini PC) for remote management
 
-## Components
+## Licensing Model
+
+Adro uses an **Open Core** model:
+
+| Directory | License | Scope |
+|-----------|---------|-------|
+| [`core/`](core/) | [MIT](LICENSE) | Fully functional platform for a single farm or small cooperative |
+| [`enterprise/`](enterprise/) | [Proprietary](LICENSE-EE) | Multi-site management, advanced analytics, enterprise integrations *(not yet implemented)* |
+
+The `core/` directory is open source and welcomes contributions.
+The `enterprise/` directory is proprietary and not open to external contributions.
+
+For commercial licensing of enterprise features, contact [your email].
+
+## Core Components
+
 | Component | Purpose |
 |-----------|---------|
-| [Switch Station V0](hardware/switch-station-v0/) | 4-channel 220VAC SSR actuator |
-| [Dosing Station V0](hardware/dosing-station-v0/) | 4-channel peristaltic pump controller |
-| [OneSense V0](hardware/onesense-v0/) | Multi-parameter water sensing node |
-| [SixSense V0](hardware/sixsense-v0/) | Continuous main reservoir monitoring |
-| [Local Control Hub](hub/) | On-site automation brain |
-| [DDNS Server](cloud/) | Cloud gateway and remote portal |
+| [Switch Station V0](core/hardware/switch-station-v0/) | 4-channel 220VAC SSR actuator |
+| [Dosing Station V0](core/hardware/dosing-station-v0/) | 4-channel peristaltic pump controller |
+| [OneSense V0](core/hardware/onesense-v0/) | Multi-parameter water sensing node |
+| [SixSense V0](core/hardware/sixsense-v0/) | Continuous main reservoir monitoring |
+| [Local Control Hub](core/hub/) | On-site automation brain |
+| [DDNS Server](core/cloud/) | Cloud gateway and remote portal |
 
 ## Quick Start
-1. Read `docs/00-platform/software-architecture.md`
-2. Build device: `hardware/switch-station-v0/` + `firmware/switch-station-v0/`
-3. Deploy hub: `hub/image/` + `hub/docker/`
-4. Deploy cloud: `cloud/image/` + `cloud/docker/`
+1. Read [`core/docs/00-platform/software-architecture.md`](core/docs/00-platform/software-architecture.md)
+2. Build device: `core/hardware/switch-station-v0/` + `core/firmware/switch-station-v0/`
+3. Deploy hub: `core/hub/image/` + `core/hub/docker/`
+4. Deploy cloud: `core/cloud/image/` + `core/cloud/docker/`
 
-## Rules
+## Repository Rules
 - One `.git` at the root. No submodules, no subtrees.
 - Every folder has a `README.md`.
 - Docs stay in sync with code.
 - Releases are tagged and manifested.
 
-See [LICENSE](LICENSE) and [CONTRIBUTING.md](CONTRIBUTING.md).
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md). Contributions to `core/` require signing a Contributor License Agreement (CLA).
 
 ## Branching & Governance
 
-- [Branching strategy](docs/00-platform/branching-strategy.md)
+- [Branching strategy](core/docs/00-platform/branching-strategy.md)
 - [Contributing](CONTRIBUTING.md)
-- [Global repository rules](docs/00-platform/global-repository.md)
+- [Global repository rules](core/docs/00-platform/global-repository.md)
+
+## License
+
+- Core: [MIT](LICENSE)
+- Enterprise: [Proprietary](LICENSE-EE)
