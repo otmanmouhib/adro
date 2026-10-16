@@ -529,6 +529,8 @@ void handleUnclaim(JsonObject d) {
 // ======================================================
 //                Command handling
 // ======================================================
+void publishTelemetry();
+
 void handleSetChannel(JsonObject d) {
   if (!d.containsKey("channel")) return;
   int ch = d["channel"].as<int>() - 1;
@@ -538,6 +540,9 @@ void handleSetChannel(JsonObject d) {
     String s = d["state"].as<String>();
     on = (s == "on" || s == "true" || s == "1");
   }
+  bool previousState = channelState[ch];
+  unsigned long previousTimer = channelTimer[ch];
+  unsigned long previousAutoOff = channelAutoOff[ch];
   channelState[ch] = on;
   setChannel(ch, on);
   channelTimer[ch] = millis();
@@ -551,8 +556,14 @@ void handleSetChannel(JsonObject d) {
       channelAutoOff[ch] = ms;
     }
   }
-  saveSettings();
+  if (!saveSettings()) {
+    channelState[ch] = previousState;
+    setChannel(ch, previousState);
+    channelTimer[ch] = previousTimer;
+    channelAutoOff[ch] = previousAutoOff;
+  }
   ledUpdateStatus();
+  publishTelemetry();
   Serial.printf("[CMD] CH%d -> %s\n", ch + 1, on ? "ON" : "OFF");
 }
 
@@ -562,20 +573,33 @@ void handleSetAll(JsonObject d) {
     String s = d["state"].as<String>();
     on = (s == "on" || s == "true" || s == "1");
   }
+  bool previousAutomation = automationEnabled;
+  bool previousStates[NUM_CHANNELS];
   for (int i = 0; i < NUM_CHANNELS; i++) {
+    previousStates[i] = channelState[i];
     channelState[i] = on; setChannel(i, on);
     channelTimer[i] = millis(); channelAutoOff[i] = 0;
   }
-  saveSettings();
+  if (!on) automationEnabled = false;
+  if (!saveSettings()) {
+    automationEnabled = previousAutomation;
+    for (int i = 0; i < NUM_CHANNELS; i++) {
+      channelState[i] = previousStates[i];
+      setChannel(i, previousStates[i]);
+    }
+  }
   ledUpdateStatus();
+  publishTelemetry();
 }
 
 void handleAutomation(JsonObject d) {
   if (!d.containsKey("enabled")) return;
+  bool previousAutomation = automationEnabled;
   automationEnabled = d["enabled"].as<bool>();
   if (automationEnabled) for (int i = 0; i < NUM_CHANNELS; i++) channelTimer[i] = millis();
-  saveSettings();
+  if (!saveSettings()) automationEnabled = previousAutomation;
   ledUpdateStatus();
+  publishTelemetry();
 }
 
 void mqttCallback(char* topic, byte* payload, unsigned int length) {
@@ -609,23 +633,44 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
     if      (strcmp(action, "set_channel") == 0) handleSetChannel(d);
     else if (strcmp(action, "set_all")     == 0) handleSetAll(d);
     else if (strcmp(action, "automation")  == 0) handleAutomation(d);
+    else if (strcmp(action, "get_state")   == 0) publishTelemetry();
     else if (strcmp(action, "reboot")      == 0) { delay(500); ESP.restart(); }
     else Serial.printf("[CMD] unknown '%s'\n", action);
   } else if (topicStr == topic_config) {
     bool changed = false;
+    unsigned long previousOnMs[NUM_CHANNELS];
+    unsigned long previousOffMs[NUM_CHANNELS];
+    for (int i = 0; i < NUM_CHANNELS; i++) {
+      previousOnMs[i] = channelOnMs[i];
+      previousOffMs[i] = channelOffMs[i];
+    }
     if (d.containsKey("channel_on_s")) {
       JsonArray a = d["channel_on_s"].as<JsonArray>();
-      for (int i = 0; i < NUM_CHANNELS && i < (int)a.size(); i++)
-        channelOnMs[i] = (unsigned long)a[i].as<float>() * 1000UL;
-      changed = true;
+      for (int i = 0; i < NUM_CHANNELS && i < (int)a.size(); i++) {
+        float seconds = a[i].as<float>();
+        if (seconds >= 1.0f && seconds <= 86400.0f) {
+          channelOnMs[i] = (unsigned long)(seconds * 1000.0f);
+          changed = true;
+        }
+      }
     }
     if (d.containsKey("channel_off_s")) {
       JsonArray a = d["channel_off_s"].as<JsonArray>();
-      for (int i = 0; i < NUM_CHANNELS && i < (int)a.size(); i++)
-        channelOffMs[i] = (unsigned long)a[i].as<float>() * 1000UL;
-      changed = true;
+      for (int i = 0; i < NUM_CHANNELS && i < (int)a.size(); i++) {
+        float seconds = a[i].as<float>();
+        if (seconds >= 1.0f && seconds <= 86400.0f) {
+          channelOffMs[i] = (unsigned long)(seconds * 1000.0f);
+          changed = true;
+        }
+      }
     }
-    if (changed) saveSettings();
+    if (changed && !saveSettings()) {
+      for (int i = 0; i < NUM_CHANNELS; i++) {
+        channelOnMs[i] = previousOnMs[i];
+        channelOffMs[i] = previousOffMs[i];
+      }
+    }
+    publishTelemetry();
   }
 }
 
@@ -697,9 +742,14 @@ void publishTelemetry() {
     o["state"] = channelState[i];
     o["on_s"]  = channelOnMs[i] / 1000.0;
     o["off_s"] = channelOffMs[i] / 1000.0;
+    unsigned long elapsed = millis() - channelTimer[i];
+    o["auto_off_remaining_s"] = channelAutoOff[i] > elapsed
+      ? (channelAutoOff[i] - elapsed) / 1000.0
+      : 0;
   }
   String payload = buildEnvelope(data);
   client.publish(topic_telemetry.c_str(), payload.c_str(), false);
+  lastTelemetry = millis();
   ledBlink(C_GREEN, 1);
 }
 

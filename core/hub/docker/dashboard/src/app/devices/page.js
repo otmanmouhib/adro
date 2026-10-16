@@ -1,13 +1,17 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import ClaimDialog from "@/components/ClaimDialog";
+import SwitchDetails from "@/components/SwitchDetails";
 import {
+  commandTopic,
+  configTopic,
   connectMqtt,
   HELLO_TOPIC,
+  STATUS_TOPIC,
+  TELEMETRY_TOPIC,
   parseTopic,
   requestClaimState,
-  STATUS_TOPIC,
 } from "@/lib/mqtt";
 
 const DEVICE_NAMES_KEY = "adro.deviceNames";
@@ -20,12 +24,23 @@ function getSavedDeviceNames() {
   }
 }
 
+function publishMqtt(client, topic, data) {
+  return new Promise((resolve, reject) => {
+    client.publish(topic, JSON.stringify({ data }), { qos: 1 }, (error) =>
+      error ? reject(error) : resolve(),
+    );
+  });
+}
+
 export default function DevicesPage() {
   const [devices, setDevices] = useState({}); // mac -> device
   const [claiming, setClaiming] = useState(null);
   const [connected, setConnected] = useState(false);
   const [changingClaim, setChangingClaim] = useState(null);
   const [claimError, setClaimError] = useState(null);
+  const [selectedMac, setSelectedMac] = useState(null);
+  const [detailsError, setDetailsError] = useState(null);
+  const clientRef = useRef(null);
 
   useEffect(() => {
     let client;
@@ -40,6 +55,7 @@ export default function DevicesPage() {
       );
 
       client = await connectMqtt();
+      clientRef.current = client;
       console.log("[MQTT] client object created");
 
       if (cancelled) {
@@ -52,6 +68,7 @@ export default function DevicesPage() {
         setConnected(true);
         client.subscribe(HELLO_TOPIC, { qos: 1 });
         client.subscribe(STATUS_TOPIC, { qos: 1 });
+        client.subscribe(TELEMETRY_TOPIC, { qos: 1 });
       });
 
       client.on("error", (err) => {
@@ -140,14 +157,59 @@ export default function DevicesPage() {
             },
           }));
         }
+
+        if (parsed.kind === "telemetry") {
+          const telemetry = data?.data;
+          if (!Array.isArray(telemetry?.channels)) return;
+          const savedName = getSavedDeviceNames()[parsed.mac];
+          setDevices((prev) => ({
+            ...prev,
+            [parsed.mac]: {
+              ...prev[parsed.mac],
+              mac: parsed.mac,
+              type: parsed.type,
+              name: prev[parsed.mac]?.name || savedName,
+              claimed: true,
+              status: "online",
+              fw: data.v || prev[parsed.mac]?.fw,
+              telemetry,
+              lastTelemetry: Date.now(),
+            },
+          }));
+        }
       });
     })();
 
     return () => {
       cancelled = true;
+      if (clientRef.current === client) clientRef.current = null;
       if (client) client.end(true);
     };
   }, []);
+
+  function sendDeviceCommand(device, command) {
+    const client = clientRef.current;
+    if (!client?.connected) {
+      return Promise.reject(new Error("Dashboard is disconnected from the broker"));
+    }
+    return publishMqtt(client, commandTopic(device.type, device.mac), command);
+  }
+
+  function saveDeviceConfig(device, config) {
+    const client = clientRef.current;
+    if (!client?.connected) {
+      return Promise.reject(new Error("Dashboard is disconnected from the broker"));
+    }
+    return publishMqtt(client, configTopic(device.type, device.mac), config);
+  }
+
+  function openDevice(device) {
+    setSelectedMac(device.mac);
+    setDetailsError(null);
+    sendDeviceCommand(device, { action: "get_state" }).catch((error) => {
+      setDetailsError(error.message || "Could not request device state");
+    });
+  }
 
   async function unclaimDevice(device) {
     setChangingClaim(device.mac);
@@ -159,13 +221,9 @@ export default function DevicesPage() {
       window.localStorage.setItem(DEVICE_NAMES_KEY, JSON.stringify(names));
       setDevices((prev) => ({
         ...prev,
-        [device.mac]: {
-          ...prev[device.mac],
-          claimed: false,
-          status: "unclaimed",
-          name: undefined,
-        },
+        [device.mac]: { ...prev[device.mac], claimed: false, status: "unclaimed", name: undefined },
       }));
+      if (selectedMac === device.mac) setSelectedMac(null);
     } catch (error) {
       setClaimError(error.message || "Unclaim failed");
     } finally {
@@ -174,11 +232,14 @@ export default function DevicesPage() {
   }
 
   const list = Object.values(devices);
+  const selectedDevice = selectedMac ? devices[selectedMac] : null;
 
   return (
     <div className="max-w-3xl">
       <div className="mb-8">
-        <h1 className="mb-3 text-3xl font-semibold tracking-tight">Devices</h1>
+        <h1 className="mb-3 text-3xl font-semibold tracking-tight">
+          Devices
+        </h1>
         <p className="leading-7 text-zinc-600 dark:text-zinc-400">
           Nearby Adro devices that have announced themselves on the local
           network. Select one to claim it to this hub.
@@ -196,9 +257,7 @@ export default function DevicesPage() {
         </span>
       </div>
       {claimError && (
-        <p className="mb-4 text-sm text-red-600 dark:text-red-400">
-          {claimError}
-        </p>
+        <p className="mb-4 text-sm text-red-600 dark:text-red-400">{claimError}</p>
       )}
 
       {list.length === 0 ? (
@@ -210,12 +269,15 @@ export default function DevicesPage() {
       ) : (
         <ul className="grid gap-3 sm:grid-cols-2">
           {list.map((d) => (
-            <li
-              key={d.mac}
-              className="flex flex-col gap-3 rounded-lg border border-zinc-200 p-5 dark:border-zinc-800"
-            >
-              <div>
-                <div className="font-medium">{d.name || d.model || d.mac}</div>
+            <li key={d.mac} className="rounded-lg border border-zinc-200 p-5 dark:border-zinc-800">
+              <button
+                type="button"
+                onClick={() => (d.claimed ? openDevice(d) : setClaiming(d))}
+                className="mb-3 block w-full text-left"
+              >
+                <div className="font-medium">
+                  {d.name || d.model || d.mac}
+                </div>
                 <div className="text-sm text-zinc-500">
                   {d.type} · {d.model || "unknown model"}
                 </div>
@@ -242,7 +304,7 @@ export default function DevicesPage() {
                     {d.capabilities}
                   </div>
                 )}
-              </div>
+              </button>
 
               {d.claimed ? (
                 <button
@@ -274,16 +336,23 @@ export default function DevicesPage() {
           onClaimed={(updated) => {
             const names = getSavedDeviceNames();
             names[updated.mac] = updated.name;
-            window.localStorage.setItem(
-              DEVICE_NAMES_KEY,
-              JSON.stringify(names),
-            );
+            window.localStorage.setItem(DEVICE_NAMES_KEY, JSON.stringify(names));
             setDevices((prev) => ({
               ...prev,
               [updated.mac]: { ...updated, claimed: true },
             }));
             setClaiming(null);
           }}
+        />
+      )}
+      {selectedDevice?.claimed && (
+        <SwitchDetails
+          device={selectedDevice}
+          brokerConnected={connected}
+          error={detailsError}
+          onClose={() => setSelectedMac(null)}
+          onCommand={(command) => sendDeviceCommand(selectedDevice, command)}
+          onSaveConfig={(config) => saveDeviceConfig(selectedDevice, config)}
         />
       )}
     </div>

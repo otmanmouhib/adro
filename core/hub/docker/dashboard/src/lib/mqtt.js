@@ -10,6 +10,7 @@ function getBrokerUrl() {
 
 export const HELLO_TOPIC = "adro/unclaimed/+/hello";
 export const STATUS_TOPIC = "adro/devices/+/+/status";
+export const TELEMETRY_TOPIC = "adro/devices/+/+/telemetry";
 
 export function claimTopic(deviceType, mac) {
   return `adro/devices/${deviceType}/${mac}/claimed`;
@@ -38,10 +39,7 @@ export async function requestClaimState(device, claimed) {
         return;
       }
 
-      const timeout = setTimeout(
-        () => finish(new Error("Broker connection timed out")),
-        10000,
-      );
+      const timeout = setTimeout(() => finish(new Error("Broker connection timed out")), 10000);
       const finish = (error) => {
         clearTimeout(timeout);
         client.removeListener("connect", onConnect);
@@ -110,6 +108,10 @@ export function telemetryTopic(deviceType, mac) {
 
 export function commandTopic(deviceType, mac) {
   return `adro/devices/${deviceType}/${mac}/command`;
+}
+
+export function configTopic(deviceType, mac) {
+  return `adro/devices/${deviceType}/${mac}/config`;
 }
 
 export function parseTopic(topic) {
