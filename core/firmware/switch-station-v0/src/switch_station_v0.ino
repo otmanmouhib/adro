@@ -13,7 +13,7 @@
 //             SWITCH STATION V0 CONFIG
 // ======================================================
 
-const char* currentFirmwareVersion = "1.0.45";
+const char* currentFirmwareVersion = "1.0.46";
 const char* otaManifestBase = "http://adro.local:8000";
 
 const char* mqtt_host = "adro.local";
@@ -381,7 +381,7 @@ void ensureWifi() {
 //                Envelopes
 // ======================================================
 String buildEnvelope(JsonDocument& data) {
-  DynamicJsonDocument env(512);
+  DynamicJsonDocument env(1536);
   env["ts"]   = (uint32_t)getUnixTimestamp();
   env["seq"]  = seqCounter++;
   env["v"]    = currentFirmwareVersion;
@@ -792,7 +792,7 @@ void reconnect() {
 void publishTelemetry() {
   if (!claimed) return;
 
-  DynamicJsonDocument data(512);
+  DynamicJsonDocument data(768);
   data["wifi"]       = (WiFi.status() == WL_CONNECTED);
   data["mqtt"]       = client.connected();
   data["rssi"]       = WiFi.RSSI();
@@ -815,9 +815,13 @@ void publishTelemetry() {
       : 0;
   }
   String payload = buildEnvelope(data);
-  client.publish(topic_telemetry.c_str(), payload.c_str(), false);
-  lastTelemetry = millis();
-  ledBlink(C_GREEN, 1);
+  if (client.publish(topic_telemetry.c_str(), payload.c_str(), false)) {
+    lastTelemetry = millis();
+    ledBlink(C_GREEN, 1);
+  } else {
+    Serial.printf("[TELEMETRY] publish failed (%u-byte payload)\n",
+                  payload.length());
+  }
 }
 
 // ======================================================
@@ -943,6 +947,9 @@ void setup() {
   client.setCallback(mqttCallback);
   client.setKeepAlive(60);
   client.setSocketTimeout(30);
+  if (!client.setBufferSize(1024)) {
+    Serial.println("[MQTT] failed to allocate 1024-byte packet buffer");
+  }
 
   reconnect();
 

@@ -1,5 +1,10 @@
 # Switch Station V0 Firmware Changelog
 
+## [1.0.46] - 2026-10-16
+### Fixed
+- Increase MQTT and JSON buffers so four-channel telemetry can be published reliably.
+- Log telemetry publish failures instead of silently dropping device state.
+
 ## [1.0.45] - 2026-10-16
 ### Fixed
 - Apply and persist timer edits for one SSR channel without modifying other channels.
