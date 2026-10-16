@@ -13,7 +13,7 @@
 //             SWITCH STATION V0 CONFIG
 // ======================================================
 
-const char* currentFirmwareVersion = "1.0.44";
+const char* currentFirmwareVersion = "1.0.45";
 const char* otaManifestBase = "http://adro.local:8000";
 
 const char* mqtt_host = "adro.local";
@@ -682,27 +682,50 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
     bool changed = false;
     unsigned long previousOnMs[NUM_CHANNELS];
     unsigned long previousOffMs[NUM_CHANNELS];
+    unsigned long previousTimers[NUM_CHANNELS];
     for (int i = 0; i < NUM_CHANNELS; i++) {
       previousOnMs[i] = channelOnMs[i];
       previousOffMs[i] = channelOffMs[i];
+      previousTimers[i] = channelTimer[i];
     }
-    if (d.containsKey("channel_on_s")) {
-      JsonArray a = d["channel_on_s"].as<JsonArray>();
-      for (int i = 0; i < NUM_CHANNELS && i < (int)a.size(); i++) {
-        float seconds = a[i].as<float>();
-        if (seconds >= 1.0f && seconds <= 86400.0f) {
-          channelOnMs[i] = (unsigned long)(seconds * 1000.0f);
-          changed = true;
+
+    if (d.containsKey("channel")) {
+      int channel = d["channel"].as<int>() - 1;
+      if (channel < 0 || channel >= NUM_CHANNELS ||
+          !d.containsKey("on_s") || !d.containsKey("off_s")) {
+        publishTelemetry();
+        return;
+      }
+      float onSeconds = d["on_s"].as<float>();
+      float offSeconds = d["off_s"].as<float>();
+      if (onSeconds < 1.0f || onSeconds > 86400.0f ||
+          offSeconds < 1.0f || offSeconds > 86400.0f) {
+        publishTelemetry();
+        return;
+      }
+      channelOnMs[channel] = (unsigned long)(onSeconds * 1000.0f);
+      channelOffMs[channel] = (unsigned long)(offSeconds * 1000.0f);
+      channelTimer[channel] = millis();
+      changed = true;
+    } else {
+      if (d.containsKey("channel_on_s")) {
+        JsonArray a = d["channel_on_s"].as<JsonArray>();
+        for (int i = 0; i < NUM_CHANNELS && i < (int)a.size(); i++) {
+          float seconds = a[i].as<float>();
+          if (seconds >= 1.0f && seconds <= 86400.0f) {
+            channelOnMs[i] = (unsigned long)(seconds * 1000.0f);
+            changed = true;
+          }
         }
       }
-    }
-    if (d.containsKey("channel_off_s")) {
-      JsonArray a = d["channel_off_s"].as<JsonArray>();
-      for (int i = 0; i < NUM_CHANNELS && i < (int)a.size(); i++) {
-        float seconds = a[i].as<float>();
-        if (seconds >= 1.0f && seconds <= 86400.0f) {
-          channelOffMs[i] = (unsigned long)(seconds * 1000.0f);
-          changed = true;
+      if (d.containsKey("channel_off_s")) {
+        JsonArray a = d["channel_off_s"].as<JsonArray>();
+        for (int i = 0; i < NUM_CHANNELS && i < (int)a.size(); i++) {
+          float seconds = a[i].as<float>();
+          if (seconds >= 1.0f && seconds <= 86400.0f) {
+            channelOffMs[i] = (unsigned long)(seconds * 1000.0f);
+            changed = true;
+          }
         }
       }
     }
@@ -710,6 +733,7 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
       for (int i = 0; i < NUM_CHANNELS; i++) {
         channelOnMs[i] = previousOnMs[i];
         channelOffMs[i] = previousOffMs[i];
+        channelTimer[i] = previousTimers[i];
       }
     }
     publishTelemetry();

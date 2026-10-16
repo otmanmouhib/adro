@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 
 const CHANNEL_COUNT = 4;
 
@@ -11,11 +11,10 @@ function channelsToDraft(channels) {
   }));
 }
 
-function configMatches(channels, expected) {
-  return channels.every(
-    (channel, index) =>
-      Number(channel.on_s) === expected[index].on &&
-      Number(channel.off_s) === expected[index].off,
+function configMatches(channel, expected) {
+  return (
+    Number(channel.on_s) === expected.on &&
+    Number(channel.off_s) === expected.off
   );
 }
 
@@ -30,48 +29,91 @@ export default function SwitchDetails({
   const channels = device.telemetry?.channels || [];
   const hasTelemetry = channels.length === CHANNEL_COUNT;
   const [draft, setDraft] = useState(() => channelsToDraft(channels));
-  const [draftDirty, setDraftDirty] = useState(false);
-  const [pendingConfig, setPendingConfig] = useState(false);
-  const [pendingChannel, setPendingChannel] = useState(null);
-  const [pendingAutomation, setPendingAutomation] = useState(null);
+  const [dirtyChannels, setDirtyChannels] = useState({});
+  const [pendingConfig, setPendingConfig] = useState({});
+  const [pendingChannel, setPendingChannel] = useState({});
+  const [pendingAutomation, setPendingAutomation] = useState({});
   const [pendingAllOff, setPendingAllOff] = useState(false);
   const [actionError, setActionError] = useState(null);
-  const pendingConfigRef = useRef(null);
+  const [savedChannel, setSavedChannel] = useState(null);
 
   useEffect(() => {
     if (!hasTelemetry) return;
-    const expected = pendingConfigRef.current;
-    if (expected && configMatches(channels, expected)) {
-      pendingConfigRef.current = null;
-      setDraftDirty(false);
-      setPendingConfig(false);
+    if (Object.keys(dirtyChannels).length === 0) {
+      setDraft(channelsToDraft(channels));
     }
-    if (!draftDirty) setDraft(channelsToDraft(channels));
+    for (let index = 0; index < CHANNEL_COUNT; index++) {
+      const channelNumber = index + 1;
+      const expected = pendingConfig[channelNumber];
+      if (expected && configMatches(channels[index], expected)) {
+        setPendingConfig((current) => {
+          if (current[channelNumber] !== expected) return current;
+          const next = { ...current };
+          delete next[channelNumber];
+          return next;
+        });
+        setDirtyChannels((current) => {
+          const next = { ...current };
+          delete next[channelNumber];
+          return next;
+        });
+        setSavedChannel(channelNumber);
+      }
+    }
     setPendingChannel((pending) => {
-      if (!pending) return null;
-      return channels[pending.channel - 1]?.state === pending.state
-        ? null
-        : pending;
+      let changed = false;
+      const next = { ...pending };
+      for (const [channelNumber, state] of Object.entries(pending)) {
+        if (channels[Number(channelNumber) - 1]?.state === state) {
+          delete next[channelNumber];
+          changed = true;
+        }
+      }
+      return changed ? next : pending;
     });
-    if (
-      pendingAutomation !== null &&
-      channels[pendingAutomation.channel - 1]?.automation === pendingAutomation.enabled
-    ) {
-      setPendingAutomation(null);
-    }
+    setPendingAutomation((pending) => {
+      let changed = false;
+      const next = { ...pending };
+      for (const [channelNumber, enabled] of Object.entries(pending)) {
+        if (channels[Number(channelNumber) - 1]?.automation === enabled) {
+          delete next[channelNumber];
+          changed = true;
+        }
+      }
+      return changed ? next : pending;
+    });
     if (
       pendingAllOff &&
       channels.every((channel) => !channel.state && !channel.automation)
     ) {
       setPendingAllOff(false);
     }
-  }, [draftDirty, hasTelemetry, channels, pendingAutomation, pendingAllOff]);
+  }, [dirtyChannels, hasTelemetry, channels, pendingConfig, pendingAllOff]);
+
+  useEffect(() => {
+    if (
+      !pendingAllOff &&
+      Object.keys(pendingChannel).length === 0 &&
+      Object.keys(pendingAutomation).length === 0 &&
+      Object.keys(pendingConfig).length === 0
+    ) {
+      return;
+    }
+    const timeout = setTimeout(() => {
+      setActionError("The device did not confirm the update. Check that it is online and running firmware 1.0.45 or later.");
+      setPendingAllOff(false);
+      setPendingChannel({});
+      setPendingAutomation({});
+      setPendingConfig({});
+    }, 10000);
+    return () => clearTimeout(timeout);
+  }, [pendingAllOff, pendingAutomation, pendingChannel, pendingConfig]);
 
   const isOnline = brokerConnected && device.status === "online";
 
   async function setChannel(channel, state) {
     setActionError(null);
-    setPendingChannel({ channel, state });
+    setPendingChannel((pending) => ({ ...pending, [channel]: state }));
     try {
       await onCommand({
         action: "set_channel",
@@ -80,18 +122,26 @@ export default function SwitchDetails({
       });
     } catch (commandError) {
       setActionError(commandError.message || "Relay command could not be sent");
-      setPendingChannel(null);
+      setPendingChannel((pending) => {
+        const next = { ...pending };
+        delete next[channel];
+        return next;
+      });
     }
   }
 
   async function setAutomation(channel, enabled) {
     setActionError(null);
-    setPendingAutomation({ channel, enabled });
+    setPendingAutomation((pending) => ({ ...pending, [channel]: enabled }));
     try {
       await onCommand({ action: "automation", channel, enabled });
     } catch (commandError) {
       setActionError(commandError.message || "Automation command could not be sent");
-      setPendingAutomation(null);
+      setPendingAutomation((pending) => {
+        const next = { ...pending };
+        delete next[channel];
+        return next;
+      });
     }
   }
 
@@ -106,47 +156,47 @@ export default function SwitchDetails({
     }
   }
 
-  async function saveConfiguration(event) {
-    event.preventDefault();
-    const expected = draft.map(({ on, off }) => ({
-      on: Number(on),
-      off: Number(off),
-    }));
+  async function saveConfiguration(channelNumber) {
+    const channelIndex = channelNumber - 1;
+    const expected = {
+      on: Number(draft[channelIndex].on),
+      off: Number(draft[channelIndex].off),
+    };
     if (
-      expected.some(
-        ({ on, off }) =>
-          !Number.isFinite(on) ||
-          !Number.isFinite(off) ||
-          on < 1 ||
-          on > 86400 ||
-          off < 1 ||
-          off > 86400,
-      )
+      !Number.isFinite(expected.on) ||
+      !Number.isFinite(expected.off) ||
+      expected.on < 1 ||
+      expected.on > 86400 ||
+      expected.off < 1 ||
+      expected.off > 86400
     ) {
       setActionError("Timer values must be between 1 and 86400 seconds");
       return;
     }
 
     setActionError(null);
-    setPendingConfig(true);
-    pendingConfigRef.current = expected;
+    setSavedChannel(null);
+    setPendingConfig((pending) => ({ ...pending, [channelNumber]: expected }));
     try {
-      await onSaveConfig({
-        channel_on_s: expected.map((channel) => channel.on),
-        channel_off_s: expected.map((channel) => channel.off),
-      });
+      await onSaveConfig({ channel: channelNumber, on_s: expected.on, off_s: expected.off });
     } catch (commandError) {
-      pendingConfigRef.current = null;
-      setPendingConfig(false);
+      setPendingConfig((pending) => {
+        const next = { ...pending };
+        delete next[channelNumber];
+        return next;
+      });
       setActionError(commandError.message || "Configuration could not be saved");
     }
   }
 
-  function updateDraft(index, key, value) {
-    setDraftDirty(true);
+  function updateDraft(channelNumber, key, value) {
+    setDirtyChannels((current) => ({ ...current, [channelNumber]: true }));
+    setSavedChannel(null);
     setDraft((current) =>
       current.map((channel, channelIndex) =>
-        channelIndex === index ? { ...channel, [key]: value } : channel,
+        channelIndex === channelNumber - 1
+          ? { ...channel, [key]: value }
+          : channel,
       ),
     );
   }
@@ -192,94 +242,135 @@ export default function SwitchDetails({
           </button>
         </div>
 
-        <div className="overflow-x-auto">
-          <table className="w-full min-w-[720px] text-left text-sm">
-            <thead className="text-xs uppercase text-zinc-500">
-              <tr>
-                <th className="pb-2 pr-3 font-medium">Output</th>
-                <th className="pb-2 px-2 font-medium">Relay state</th>
-                <th className="pb-2 px-2 font-medium">Auto cycle</th>
-                <th className="pb-2 px-2 font-medium">On seconds</th>
-                <th className="pb-2 px-2 font-medium">Off seconds</th>
-                <th className="pb-2 pl-2 font-medium">Auto-off</th>
-              </tr>
-            </thead>
-            <tbody>
-              {Array.from({ length: CHANNEL_COUNT }, (_, index) => {
-                const channel = channels[index];
-                const isOn = Boolean(channel?.state);
-                const nextState = !isOn;
-                const pending = pendingChannel?.channel === index + 1;
-                const pendingAuto = pendingAutomation?.channel === index + 1;
-                return (
-                  <tr key={channel?.id ?? index + 1} className="border-t border-zinc-200 dark:border-zinc-800">
-                    <th className="py-3 pr-3 font-medium">SSR {index + 1}</th>
-                    <td className="px-2 py-3">
-                      <button
-                        type="button"
-                        aria-pressed={isOn}
-                        disabled={!isOnline || !hasTelemetry || pending}
-                        onClick={() => setChannel(index + 1, nextState)}
-                        className={`min-w-20 rounded-md px-3 py-1.5 text-xs font-semibold disabled:opacity-50 ${isOn ? "bg-emerald-700 text-white" : "bg-zinc-200 text-zinc-800 dark:bg-zinc-700 dark:text-zinc-100"}`}
-                      >
-                        {pending ? "Updating…" : isOn ? "ON" : "OFF"}
-                      </button>
-                    </td>
-                    <td className="px-2 py-3">
-                      <label className="flex items-center gap-2">
-                        <input
-                          type="checkbox"
-                          checked={Boolean(channel?.automation)}
-                          disabled={!isOnline || !hasTelemetry || pendingAuto}
-                          onChange={(event) =>
-                            setAutomation(index + 1, event.target.checked)
-                          }
-                          className="h-4 w-4 accent-emerald-700"
-                          aria-label={`Enable automatic cycling for SSR ${index + 1}`}
-                        />
-                        <span className="text-xs text-zinc-500">
-                          {pendingAuto ? "Updating…" : channel?.automation ? "On" : "Off"}
-                        </span>
-                      </label>
-                    </td>
-                    <td className="px-2 py-3">
-                      <input
-                        type="number"
-                        min="1"
-                        max="86400"
-                        step="1"
-                        required
-                        aria-label={`SSR ${index + 1} on duration in seconds`}
-                        value={draft[index].on}
-                        disabled={!hasTelemetry}
-                        onChange={(event) => updateDraft(index, "on", event.target.value)}
-                        className="w-24 rounded-md border border-zinc-300 bg-transparent px-2 py-1.5 dark:border-zinc-700"
-                      />
-                    </td>
-                    <td className="px-2 py-3">
-                      <input
-                        type="number"
-                        min="1"
-                        max="86400"
-                        step="1"
-                        required
-                        aria-label={`SSR ${index + 1} off duration in seconds`}
-                        value={draft[index].off}
-                        disabled={!hasTelemetry}
-                        onChange={(event) => updateDraft(index, "off", event.target.value)}
-                        className="w-24 rounded-md border border-zinc-300 bg-transparent px-2 py-1.5 dark:border-zinc-700"
-                      />
-                    </td>
-                    <td className="py-3 pl-2 text-zinc-600 dark:text-zinc-400">
+        <div className="grid gap-3 sm:grid-cols-2">
+          {Array.from({ length: CHANNEL_COUNT }, (_, index) => {
+            const channelNumber = index + 1;
+            const channel = channels[index];
+            const isOn = Boolean(channel?.state);
+            const pendingState = pendingChannel[channelNumber];
+            const pendingAuto = pendingAutomation[channelNumber] !== undefined;
+            const saving = pendingConfig[channelNumber] !== undefined;
+            return (
+              <article
+                key={channel?.id ?? channelNumber}
+                className="min-w-0 border border-zinc-200 p-4 dark:border-zinc-800"
+              >
+                <header className="mb-4 flex items-start justify-between gap-3">
+                  <div>
+                    <h3 className="font-semibold">SSR {channelNumber}</h3>
+                    <p className="mt-0.5 text-xs text-zinc-500">
                       {channel?.auto_off_remaining_s > 0
-                        ? `${Math.ceil(channel.auto_off_remaining_s)} s`
-                        : "—"}
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
+                        ? `Auto-off in ${Math.ceil(channel.auto_off_remaining_s)} s`
+                        : "No active auto-off timer"}
+                    </p>
+                  </div>
+                  <span
+                    className={`text-xs font-semibold ${isOn ? "text-emerald-700 dark:text-emerald-300" : "text-zinc-500"}`}
+                  >
+                    {pendingState !== undefined ? "Updating" : isOn ? "ON" : "OFF"}
+                  </span>
+                </header>
+
+                <div className="mb-4 grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    aria-pressed={isOn}
+                    disabled={!isOnline || !hasTelemetry || pendingState !== undefined}
+                    onClick={() => setChannel(channelNumber, true)}
+                    className={`min-h-10 border px-3 text-sm font-semibold disabled:opacity-50 ${isOn ? "border-emerald-700 bg-emerald-700 text-white" : "border-zinc-300 hover:bg-emerald-50 dark:border-zinc-700 dark:hover:bg-emerald-950"}`}
+                  >
+                    ON
+                  </button>
+                  <button
+                    type="button"
+                    aria-pressed={!isOn}
+                    disabled={!isOnline || !hasTelemetry || pendingState !== undefined}
+                    onClick={() => setChannel(channelNumber, false)}
+                    className={`min-h-10 border px-3 text-sm font-semibold disabled:opacity-50 ${!isOn ? "border-zinc-700 bg-zinc-700 text-white dark:border-zinc-300 dark:bg-zinc-300 dark:text-zinc-900" : "border-zinc-300 hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800"}`}
+                  >
+                    OFF
+                  </button>
+                </div>
+
+                <label className="mb-4 flex min-h-10 items-center justify-between border-y border-zinc-200 py-2 text-sm dark:border-zinc-800">
+                  <span>Automatic cycling</span>
+                  <span className="flex items-center gap-2">
+                    <input
+                      type="checkbox"
+                      checked={Boolean(channel?.automation)}
+                      disabled={!isOnline || !hasTelemetry || pendingAuto}
+                      onChange={(event) =>
+                        setAutomation(channelNumber, event.target.checked)
+                      }
+                      className="h-4 w-4 accent-emerald-700"
+                      aria-label={`Enable automatic cycling for SSR ${channelNumber}`}
+                    />
+                    <span className="text-xs text-zinc-500">
+                      {pendingAuto ? "Updating…" : channel?.automation ? "On" : "Off"}
+                    </span>
+                  </span>
+                </label>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <label className="text-xs text-zinc-600 dark:text-zinc-400">
+                    <span className="mb-1 block">On time (seconds)</span>
+                    <input
+                      type="number"
+                      min="1"
+                      max="86400"
+                      step="1"
+                      required
+                      aria-label={`SSR ${channelNumber} on duration in seconds`}
+                      value={draft[index].on}
+                      disabled={!hasTelemetry || saving}
+                      onChange={(event) => updateDraft(channelNumber, "on", event.target.value)}
+                      className="h-10 w-full min-w-0 border border-zinc-300 bg-transparent px-2 text-sm text-zinc-900 outline-none focus:border-emerald-700 dark:border-zinc-700 dark:text-zinc-100"
+                    />
+                  </label>
+                  <label className="text-xs text-zinc-600 dark:text-zinc-400">
+                    <span className="mb-1 block">Off time (seconds)</span>
+                    <input
+                      type="number"
+                      min="1"
+                      max="86400"
+                      step="1"
+                      required
+                      aria-label={`SSR ${channelNumber} off duration in seconds`}
+                      value={draft[index].off}
+                      disabled={!hasTelemetry || saving}
+                      onChange={(event) => updateDraft(channelNumber, "off", event.target.value)}
+                      className="h-10 w-full min-w-0 border border-zinc-300 bg-transparent px-2 text-sm text-zinc-900 outline-none focus:border-emerald-700 dark:border-zinc-700 dark:text-zinc-100"
+                    />
+                  </label>
+                </div>
+
+                <div className="mt-3 flex min-h-9 items-center justify-between gap-3">
+                  <span className="text-xs text-zinc-500">
+                    {saving
+                      ? "Waiting for ESP confirmation…"
+                      : savedChannel === channelNumber
+                        ? "Saved to ESP"
+                        : dirtyChannels[channelNumber]
+                          ? "Unsaved changes"
+                          : "Saved"}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => saveConfiguration(channelNumber)}
+                    disabled={
+                      !isOnline ||
+                      !hasTelemetry ||
+                      !dirtyChannels[channelNumber] ||
+                      saving
+                    }
+                    className="min-h-9 border border-zinc-300 px-3 text-xs font-medium hover:bg-zinc-100 disabled:opacity-40 dark:border-zinc-700 dark:hover:bg-zinc-800"
+                  >
+                    {saving ? "Saving…" : "Save times"}
+                  </button>
+                </div>
+              </article>
+            );
+          })}
         </div>
 
         {!hasTelemetry && (
@@ -296,17 +387,8 @@ export default function SwitchDetails({
           </p>
         )}
 
-        <form onSubmit={saveConfiguration} className="mt-5 flex justify-end">
-          <button
-            type="submit"
-            disabled={!isOnline || !hasTelemetry || pendingConfig || !draftDirty}
-            className="rounded-md bg-zinc-900 px-4 py-2 text-sm font-medium text-white disabled:opacity-50 dark:bg-zinc-100 dark:text-zinc-900"
-          >
-            {pendingConfig ? "Waiting for device…" : "Save timer settings"}
-          </button>
-        </form>
-        <p className="mt-2 text-right text-xs text-zinc-500">
-          Timer range: 1 second to 24 hours per phase.
+        <p className="mt-5 text-xs text-zinc-500">
+          Timer range: 1 second to 24 hours per phase. Each output saves independently.
         </p>
       </section>
     </div>

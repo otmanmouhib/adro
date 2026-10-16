@@ -1,5 +1,9 @@
 # Switch Station V0 Firmware Changelog
 
+## [1.0.45] - 2026-10-16
+### Fixed
+- Apply and persist timer edits for one SSR channel without modifying other channels.
+
 ## [1.0.44] - 2026-10-16
 ### Added
 - Independent per-SSR automatic cycling settings persisted in EEPROM and reported in telemetry.
