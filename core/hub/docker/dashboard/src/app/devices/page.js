@@ -269,11 +269,11 @@ export default function DevicesPage() {
       ) : (
         <ul className="grid gap-3 sm:grid-cols-2">
           {list.map((d) => (
-            <li key={d.mac} className="rounded-lg border border-zinc-200 p-5 dark:border-zinc-800">
+            <li key={d.mac} className="overflow-hidden rounded-lg border border-zinc-200 dark:border-zinc-800">
               <button
                 type="button"
                 onClick={() => (d.claimed ? openDevice(d) : setClaiming(d))}
-                className="mb-3 block w-full text-left"
+                className="block min-h-40 w-full p-5 text-left transition-colors hover:bg-zinc-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-emerald-700 dark:hover:bg-zinc-800/60"
               >
                 <div className="font-medium">
                   {d.name || d.model || d.mac}
@@ -304,9 +304,14 @@ export default function DevicesPage() {
                     {d.capabilities}
                   </div>
                 )}
+                <div className="mt-4 text-sm font-medium text-emerald-800 dark:text-emerald-300">
+                  {d.claimed ? "Open switch controls" : "Claim this switch"}
+                  <span aria-hidden="true"> →</span>
+                </div>
               </button>
 
-              {d.claimed ? (
+              <div className="border-t border-zinc-200 px-5 py-3 dark:border-zinc-800">
+                {d.claimed ? (
                 <button
                   type="button"
                   onClick={() => unclaimDevice(d)}
@@ -323,7 +328,8 @@ export default function DevicesPage() {
                 >
                   Claim
                 </button>
-              )}
+                )}
+              </div>
             </li>
           ))}
         </ul>
