@@ -13,7 +13,7 @@
 //             SWITCH STATION V0 CONFIG
 // ======================================================
 
-const char* currentFirmwareVersion = "1.0.42";       // bumped for claim fix
+const char* currentFirmwareVersion = "1.0.43";
 const char* otaManifestBase = "http://adro.local:8000";
 
 const char* mqtt_host = "adro.local";
@@ -400,6 +400,11 @@ void flushOutbound(unsigned long windowMs = 1500) {
 // ======================================================
 //                     Claim handling
 // ======================================================
+void clearRetainedClaimCommands() {
+  client.publish(topic_claimed.c_str(), "", true);
+  client.publish(topic_unclaimed.c_str(), "", true);
+}
+
 void publishClaimAck(const char* requestId, bool ok, bool isClaimed) {
   StaticJsonDocument<192> doc;
   doc["mac"] = deviceMac;
@@ -457,6 +462,8 @@ void handleClaim(JsonObject d) {
   }
 
   if (claimed) {
+    clearRetainedClaimCommands();
+    flushOutbound();
     publishClaimAck(requestId, true, true);
     return;
   }
@@ -472,6 +479,7 @@ void handleClaim(JsonObject d) {
   }
   computeTopics();
 
+  clearRetainedClaimCommands();
   // Clear retained hello so dashboards stop showing this as unclaimed
   client.publish(topic_hello.c_str(), "", true);
   publishClaimAck(requestId, true, true);
@@ -506,6 +514,7 @@ void handleUnclaim(JsonObject d) {
   }
   computeTopics();
 
+  clearRetainedClaimCommands();
   client.publish(topic_status.c_str(), "", true);
   client.publish(topic_hello.c_str(), "", true);
   client.publish(topic_bye.c_str(), "{}", false);
@@ -652,11 +661,9 @@ void reconnect() {
       client.subscribe(topic_command.c_str(), 1);
       client.subscribe(topic_config.c_str(),  1);
       client.subscribe(topic_unclaimed.c_str(), 1);
-      client.subscribe(topic_claimed.c_str(), 1);
       Serial.println("[MQTT] subscribed (claimed)");
     } else {
       client.subscribe(topic_claimed.c_str(), 1);
-      client.subscribe(topic_unclaimed.c_str(), 1);
       publishHello();
       Serial.println("[MQTT] subscribed (unclaimed)");
     }

@@ -1,5 +1,10 @@
 # Switch Station V0 Firmware Changelog
 
+## [1.0.43] - 2026-10-16
+### Fixed
+- Clear retained claim commands after transitions to prevent replay-driven reboot loops.
+- Keep unclaimed devices unsubscribed from the unclaim topic.
+
 ## [1.0.0] - 2026-10-12
 ### Added
 - Initial firmware release.
