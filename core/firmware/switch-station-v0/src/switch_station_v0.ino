@@ -13,7 +13,7 @@
 //             SWITCH STATION V0 CONFIG
 // ======================================================
 
-const char* currentFirmwareVersion = "1.0.40";
+const char* currentFirmwareVersion = "1.0.41";       // bumped
 const char* otaManifestBase = "http://adro.local:8000";
 
 const char* mqtt_host = "adro.local";
@@ -52,19 +52,19 @@ const char* ssid     = "Tenda_2AAA80";
 const char* password = "";
 
 // ==== Identity ====
-String deviceMac;                  // "083af252d1dc", no colons, lowercase
-const char* deviceType = "switch"; // fixed for this firmware
+String deviceMac;
+const char* deviceType = "switch";
 bool   claimed = false;
 
 // ==== Topics ====
-String topic_hello;      // adro/unclaimed/<mac>/hello
-String topic_bye;        // adro/unclaimed/<mac>/bye
-String topic_claimed;    // adro/devices/switch/<mac>/claimed
-String topic_unclaimed;  // adro/devices/switch/<mac>/unclaimed
-String topic_status;     // adro/devices/switch/<mac>/status
-String topic_telemetry;  // adro/devices/switch/<mac>/telemetry
-String topic_command;    // adro/devices/switch/<mac>/command
-String topic_config;     // adro/devices/switch/<mac>/config
+String topic_hello;
+String topic_bye;
+String topic_claimed;
+String topic_unclaimed;
+String topic_status;
+String topic_telemetry;
+String topic_command;
+String topic_config;
 
 WiFiClient espClient;
 PubSubClient client(espClient);
@@ -80,6 +80,14 @@ const unsigned long rebootInterval = 6UL * 60UL * 60UL * 1000UL;
 uint32_t seqCounter = 0;
 
 // ======================================================
+//         RECONNECT BACKOFF (NEW — fixes flapping)
+// ======================================================
+unsigned long lastReconnectAttempt = 0;
+unsigned long reconnectBackoff = 3000;
+const unsigned long RECONNECT_BACKOFF_MIN = 3000;
+const unsigned long RECONNECT_BACKOFF_MAX = 60000;
+
+// ======================================================
 //                     EEPROM
 // ======================================================
 #define EEPROM_SIZE       128
@@ -87,7 +95,7 @@ uint32_t seqCounter = 0;
 #define ADDR_MAGIC        0
 #define ADDR_AUTOMATION   1
 #define ADDR_CLAIMED      2
-#define ADDR_CHANNEL_BASE 8    // 4 * 12 = 48 bytes -> ends at 56
+#define ADDR_CHANNEL_BASE 8
 
 void saveSettings() {
   EEPROM.write(ADDR_MAGIC, EEPROM_MAGIC);
@@ -230,7 +238,7 @@ void syncNTP() {
     }
     delay(1000);
   }
-  Serial.println("[NTP] FAIL, retry later");
+  Serial.println("[NTP] FAIL, will retry");
   ledBlink(C_RED, 2);
   ntpSynced = false;
 }
@@ -276,9 +284,7 @@ bool resolveBroker(int attempts = 5, int delayMs = 2000) {
     Serial.printf("[NET] resolve %s failed (%d/%d)\n", mqtt_host, i, attempts);
     delay(delayMs);
   }
-  Serial.println("[NET] mDNS FAILED, rebooting in 10s");
-  delay(10000);
-  ESP.restart();
+  Serial.println("[NET] mDNS FAILED");
   return false;
 }
 
@@ -320,6 +326,32 @@ void setup_wifi() {
   }
 
   resolveBroker();
+}
+
+// ==== NEW: runtime WiFi check ====
+void ensureWifi() {
+  if (WiFi.status() == WL_CONNECTED) return;
+
+  Serial.println("[WiFi] lost, reconnecting");
+  ledSetBase(C_BLUE);
+  WiFi.disconnect();
+  delay(100);
+  WiFi.begin(ssid, password);
+
+  unsigned long t0 = millis();
+  while (WiFi.status() != WL_CONNECTED && millis() - t0 < 20000) {
+    delay(200);
+  }
+
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.printf("[WiFi] reconnected IP=%s\n",
+                  WiFi.localIP().toString().c_str());
+    if (resolveBroker(3, 1000)) {
+      client.setServer(mqtt_broker_ip, mqtt_port);
+    }
+  } else {
+    Serial.println("[WiFi] reconnect failed, will retry");
+  }
 }
 
 // ======================================================
@@ -386,8 +418,7 @@ void handleClaim(JsonObject d) {
 
   String remoteType = d["type"] | "";
   if (remoteType.length() > 0 && remoteType != deviceType) {
-    Serial.printf("[CLAIM] refusing: type mismatch (remote=%s local=%s)\n",
-                  remoteType.c_str(), deviceType);
+    Serial.printf("[CLAIM] refusing: type mismatch\n");
     return;
   }
 
@@ -397,6 +428,7 @@ void handleClaim(JsonObject d) {
   saveSettings();
   computeTopics();
 
+  // Clear retained hello so dashboards stop showing this as unclaimed
   client.publish(topic_hello.c_str(), "", true);
   flushOutbound(1500);
 
@@ -409,7 +441,7 @@ void handleUnclaim(JsonObject d) {
   String mac = d["mac"] | "";
   if (mac != deviceMac) return;
 
-  Serial.println("[CLAIM] unclaimed, factory reset");
+  Serial.println("[CLAIM] unclaimed, back to discovery");
   claimed = false;
   saveSettings();
   computeTopics();
@@ -444,7 +476,7 @@ void handleSetChannel(JsonObject d) {
     unsigned long dur = d["duration_s"].as<unsigned long>();
     if (dur > 0) {
       unsigned long ms = dur * 1000UL;
-      if (ms / 1000UL != dur) ms = 3600000UL;  // overflow guard, cap 1h
+      if (ms / 1000UL != dur) ms = 3600000UL;
       channelAutoOff[ch] = ms;
     }
   }
@@ -486,7 +518,6 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
     return;
   }
 
-  // Claim / unclaim — flat JSON, no envelope
   if (topicStr == topic_claimed) {
     handleClaim(env.as<JsonObject>());
     return;
@@ -496,7 +527,6 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
     return;
   }
 
-  // Command / config
   if (!env.containsKey("data")) return;
   JsonObject d = env["data"].as<JsonObject>();
 
@@ -526,56 +556,48 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
 }
 
 // ======================================================
-//                MQTT reconnect
+//        MQTT reconnect — with backoff (FIXED)
 // ======================================================
 void reconnect() {
-  int attempt = 0;
-  unsigned long lastLog = 0;
+  unsigned long now = millis();
+  if (now - lastReconnectAttempt < reconnectBackoff) return;
+  lastReconnectAttempt = now;
 
-  while (!client.connected()) {
-    if (attempt > 0 && attempt % 5 == 0) {
-      Serial.println("[MQTT] re-resolving adro.local");
-      resolveBroker(3, 1000);
-      client.setServer(mqtt_broker_ip, mqtt_port);
-    }
-    if (millis() - lastLog > 2000) {
-      lastLog = millis();
-      Serial.printf("[MQTT] connecting as %s (attempt %d)\n",
-                    deviceMac.c_str(), attempt + 1);
-    }
-    ledSetBase(C_MAGENTA);
+  Serial.printf("[MQTT] connecting as %s (backoff=%lus)\n",
+                deviceMac.c_str(), reconnectBackoff / 1000);
 
-    String offlinePayload = buildStatusPayload("offline");
-    const char* lwtTopic   = claimed ? topic_status.c_str() : nullptr;
-    const char* lwtPayload = claimed ? offlinePayload.c_str() : nullptr;
-    int         lwtQos     = claimed ? 1 : 0;
-    bool        lwtRetain  = claimed ? true : false;
+  bool ok;
+  if (claimed) {
+    String offline = buildStatusPayload("offline");
+    ok = client.connect(deviceMac.c_str(), nullptr, nullptr,
+                        topic_status.c_str(), 1, true,
+                        offline.c_str());
+  } else {
+    ok = client.connect(deviceMac.c_str(), nullptr, nullptr,
+                        nullptr, 0, false, nullptr);
+  }
 
-    if (client.connect(deviceMac.c_str(),
-                       nullptr, nullptr,
-                       lwtTopic, lwtQos, lwtRetain,
-                       lwtPayload)) {
-      Serial.println("[MQTT] connected");
-      if (claimed) {
-        String online = buildStatusPayload("online");
-        client.publish(topic_status.c_str(), online.c_str(), true);
-        client.subscribe(topic_command.c_str(), 1);
-        client.subscribe(topic_config.c_str(),  1);
-        client.subscribe(topic_unclaimed.c_str(), 1);
-        Serial.println("[MQTT] subscribed (claimed)");
-      } else {
-        client.subscribe(topic_claimed.c_str(), 1);
-        publishHello();
-        Serial.println("[MQTT] subscribed (unclaimed)");
-      }
-      ledBlink(C_CYAN, 2);
-      return;
+  if (ok) {
+    Serial.println("[MQTT] connected");
+    reconnectBackoff = RECONNECT_BACKOFF_MIN;
+
+    if (claimed) {
+      String online = buildStatusPayload("online");
+      client.publish(topic_status.c_str(), online.c_str(), true);
+      client.subscribe(topic_command.c_str(), 1);
+      client.subscribe(topic_config.c_str(),  1);
+      client.subscribe(topic_unclaimed.c_str(), 1);
+      Serial.println("[MQTT] subscribed (claimed)");
     } else {
-      Serial.printf("[MQTT] failed rc=%d\n", client.state());
-      ledBlink(C_RED, 1);
-      delay(min(1000L * (attempt + 1), 30000L));
-      attempt++;
+      client.subscribe(topic_claimed.c_str(), 1);
+      publishHello();
+      Serial.println("[MQTT] subscribed (unclaimed)");
     }
+    ledBlink(C_CYAN, 2);
+  } else {
+    Serial.printf("[MQTT] failed rc=%d\n", client.state());
+    ledBlink(C_RED, 1);
+    reconnectBackoff = min(reconnectBackoff * 2, RECONNECT_BACKOFF_MAX);
   }
 }
 
@@ -635,13 +657,14 @@ void updateChannels() {
 void checkAndReboot() {
   if (!claimed) return;
   if ((millis() - startupTime) >= rebootInterval) {
+    Serial.println("[BOOT] scheduled 6h reboot");
     delay(500);
     ESP.restart();
   }
 }
 
 // ======================================================
-//                OTA (type-based, fleet-wide)
+//                OTA
 // ======================================================
 void performOTA(const char* binURL) {
   Serial.printf("[OTA] %s\n", binURL);
@@ -728,6 +751,7 @@ void setup() {
   client.setServer(mqtt_broker_ip, mqtt_port);
   client.setCallback(mqttCallback);
   client.setKeepAlive(60);
+  client.setSocketTimeout(30);       // NEW: fail fast if socket stalls
 
   reconnect();
 
@@ -739,8 +763,23 @@ void setup() {
 }
 
 void loop() {
-  if (!client.connected()) reconnect();
-  client.loop();
+  // NEW: 10s heartbeat log so you can see state changes clearly
+  static unsigned long lastLog = 0;
+  if (millis() - lastLog > 10000) {
+    lastLog = millis();
+    Serial.printf("[LOOP] up=%lus heap=%u rssi=%d wifi=%d mqtt=%d claimed=%d seq=%u\n",
+                  millis() / 1000, ESP.getFreeHeap(), WiFi.RSSI(),
+                  WiFi.status() == WL_CONNECTED,
+                  client.connected(), claimed, seqCounter);
+  }
+
+  ensureWifi();
+
+  if (!client.connected()) {
+    reconnect();
+  } else {
+    client.loop();
+  }
 
   if (!claimed) {
     if (millis() - lastHello >= helloInterval) publishHello();
