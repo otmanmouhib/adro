@@ -17,7 +17,18 @@ services:
       - /sys/class/net:/host-sys/class/net:ro
     networks:
       - adro-net
-
+  portainer:
+    image: portainer/portainer-ce:latest
+    container_name: adro-portainer
+    restart: unless-stopped
+    ports:
+      - "9443:9443"     # HTTPS UI
+      - "8000:8000"     # Edge agent tunnel (optional)
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /opt/adro-data/portainer:/data
+    networks:
+      - adro-net
   dashboard:
     build: ./dashboard
     image: adro/dashboard-hub:0.1.0

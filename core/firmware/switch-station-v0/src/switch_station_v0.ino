@@ -13,7 +13,7 @@
 //             SWITCH STATION V0 CONFIG
 // ======================================================
 
-const char* currentFirmwareVersion = "1.0.41";       // bumped
+const char* currentFirmwareVersion = "1.0.42";       // bumped for claim fix
 const char* otaManifestBase = "http://adro.local:8000";
 
 const char* mqtt_host = "adro.local";
@@ -80,7 +80,7 @@ const unsigned long rebootInterval = 6UL * 60UL * 60UL * 1000UL;
 uint32_t seqCounter = 0;
 
 // ======================================================
-//         RECONNECT BACKOFF (NEW — fixes flapping)
+//         RECONNECT BACKOFF
 // ======================================================
 unsigned long lastReconnectAttempt = 0;
 unsigned long reconnectBackoff = 3000;
@@ -328,7 +328,7 @@ void setup_wifi() {
   resolveBroker();
 }
 
-// ==== NEW: runtime WiFi check ====
+// ==== runtime WiFi check ====
 void ensureWifi() {
   if (WiFi.status() == WL_CONNECTED) return;
 
@@ -412,17 +412,35 @@ void publishHello() {
   lastHello = millis();
 }
 
-void handleClaim(JsonObject d) {
+// ==== Extract MAC from payload, accepting either field name ====
+static String extractMac(JsonObject d) {
   String mac = d["mac"] | "";
-  if (mac != deviceMac) return;
+  if (mac.length() == 0) mac = d["device_id"] | "";
+  if (mac.length() == 0) mac = d["id"] | "";
+  mac.toLowerCase();
+  return mac;
+}
 
-  String remoteType = d["type"] | "";
-  if (remoteType.length() > 0 && remoteType != deviceType) {
-    Serial.printf("[CLAIM] refusing: type mismatch\n");
+void handleClaim(JsonObject d) {
+  String mac = extractMac(d);
+  if (mac.length() == 0) {
+    Serial.println("[CLAIM] missing mac/device_id, ignoring");
+    return;
+  }
+  if (mac != deviceMac) {
+    Serial.printf("[CLAIM] mac mismatch: got %s expected %s\n",
+                  mac.c_str(), deviceMac.c_str());
     return;
   }
 
-  Serial.printf("[CLAIM] claimed (mac=%s)\n", deviceMac.c_str());
+  String remoteType = d["type"] | "";
+  if (remoteType.length() > 0 && remoteType != deviceType) {
+    Serial.printf("[CLAIM] refusing: type mismatch (remote=%s)\n",
+                  remoteType.c_str());
+    return;
+  }
+
+  Serial.printf("[CLAIM] ACCEPTED (mac=%s)\n", deviceMac.c_str());
 
   claimed = true;
   saveSettings();
@@ -438,7 +456,11 @@ void handleClaim(JsonObject d) {
 }
 
 void handleUnclaim(JsonObject d) {
-  String mac = d["mac"] | "";
+  String mac = extractMac(d);
+  if (mac.length() == 0) {
+    Serial.println("[CLAIM] unclaim: missing mac/device_id, ignoring");
+    return;
+  }
   if (mac != deviceMac) return;
 
   Serial.println("[CLAIM] unclaimed, back to discovery");
@@ -518,6 +540,9 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
     return;
   }
 
+  // Debug: log every incoming message
+  Serial.printf("[MQTT] recv %s (%u bytes)\n", topicStr.c_str(), length);
+
   if (topicStr == topic_claimed) {
     handleClaim(env.as<JsonObject>());
     return;
@@ -556,7 +581,7 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
 }
 
 // ======================================================
-//        MQTT reconnect — with backoff (FIXED)
+//        MQTT reconnect — with backoff
 // ======================================================
 void reconnect() {
   unsigned long now = millis();
@@ -751,7 +776,7 @@ void setup() {
   client.setServer(mqtt_broker_ip, mqtt_port);
   client.setCallback(mqttCallback);
   client.setKeepAlive(60);
-  client.setSocketTimeout(30);       // NEW: fail fast if socket stalls
+  client.setSocketTimeout(30);
 
   reconnect();
 
@@ -763,7 +788,7 @@ void setup() {
 }
 
 void loop() {
-  // NEW: 10s heartbeat log so you can see state changes clearly
+  // 10s heartbeat log
   static unsigned long lastLog = 0;
   if (millis() - lastLog > 10000) {
     lastLog = millis();
