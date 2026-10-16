@@ -13,7 +13,7 @@
 //             SWITCH STATION V0 CONFIG
 // ======================================================
 
-const char* currentFirmwareVersion = "1.0.43";
+const char* currentFirmwareVersion = "1.0.44";
 const char* otaManifestBase = "http://adro.local:8000";
 
 const char* mqtt_host = "adro.local";
@@ -40,6 +40,7 @@ inline void setChannel(int idx, bool on) {
 }
 
 bool          channelState[NUM_CHANNELS]   = {false, false, false, false};
+bool          channelAutomationEnabled[NUM_CHANNELS] = {false, false, false, false};
 unsigned long channelOnMs[NUM_CHANNELS]    = {1000, 1000, 1000, 1000};
 unsigned long channelOffMs[NUM_CHANNELS]   = {1000, 1000, 1000, 1000};
 unsigned long channelTimer[NUM_CHANNELS]   = {0, 0, 0, 0};
@@ -96,18 +97,30 @@ const unsigned long RECONNECT_BACKOFF_MAX = 60000;
 #define ADDR_MAGIC        0
 #define ADDR_AUTOMATION   1
 #define ADDR_CLAIMED      2
+#define ADDR_SETTINGS_VERSION 3
 #define ADDR_CHANNEL_BASE 8
+#define SETTINGS_VERSION  1
+
+bool anyChannelAutomationEnabled() {
+  for (int i = 0; i < NUM_CHANNELS; i++) {
+    if (channelAutomationEnabled[i]) return true;
+  }
+  return false;
+}
 
 bool saveSettings() {
+  automationEnabled = anyChannelAutomationEnabled();
   EEPROM.write(ADDR_MAGIC, EEPROM_MAGIC);
   EEPROM.write(ADDR_AUTOMATION, automationEnabled ? 1 : 0);
   EEPROM.write(ADDR_CLAIMED, claimed ? 1 : 0);
+  EEPROM.write(ADDR_SETTINGS_VERSION, SETTINGS_VERSION);
 
   for (int i = 0; i < NUM_CHANNELS; i++) {
     int base = ADDR_CHANNEL_BASE + i * 12;
     EEPROM.put(base + 0, channelOnMs[i]);
     EEPROM.put(base + 4, channelOffMs[i]);
     EEPROM.write(base + 8, channelState[i] ? 1 : 0);
+    EEPROM.write(base + 9, channelAutomationEnabled[i] ? 1 : 0);
   }
   bool saved = EEPROM.commit();
   Serial.println(saved ? "[EEPROM] saved" : "[EEPROM] save failed");
@@ -116,6 +129,8 @@ bool saveSettings() {
 
 void loadSettings() {
   if (EEPROM.read(ADDR_MAGIC) == EEPROM_MAGIC) {
+    bool hasPerChannelAutomation =
+      EEPROM.read(ADDR_SETTINGS_VERSION) == SETTINGS_VERSION;
     automationEnabled = EEPROM.read(ADDR_AUTOMATION) == 1;
     claimed           = EEPROM.read(ADDR_CLAIMED)    == 1;
 
@@ -124,7 +139,12 @@ void loadSettings() {
       EEPROM.get(base + 0, channelOnMs[i]);
       EEPROM.get(base + 4, channelOffMs[i]);
       channelState[i] = EEPROM.read(base + 8) == 1;
+      channelAutomationEnabled[i] = hasPerChannelAutomation
+        ? EEPROM.read(base + 9) == 1
+        : automationEnabled;
     }
+    if (!hasPerChannelAutomation) saveSettings();
+    else automationEnabled = anyChannelAutomationEnabled();
     Serial.printf("[EEPROM] loaded: claimed=%d automation=%d\n",
                   claimed, automationEnabled);
   } else {
@@ -573,20 +593,22 @@ void handleSetAll(JsonObject d) {
     String s = d["state"].as<String>();
     on = (s == "on" || s == "true" || s == "1");
   }
-  bool previousAutomation = automationEnabled;
   bool previousStates[NUM_CHANNELS];
+  bool previousAutomation[NUM_CHANNELS];
   for (int i = 0; i < NUM_CHANNELS; i++) {
     previousStates[i] = channelState[i];
+    previousAutomation[i] = channelAutomationEnabled[i];
     channelState[i] = on; setChannel(i, on);
     channelTimer[i] = millis(); channelAutoOff[i] = 0;
+    if (!on) channelAutomationEnabled[i] = false;
   }
-  if (!on) automationEnabled = false;
   if (!saveSettings()) {
-    automationEnabled = previousAutomation;
     for (int i = 0; i < NUM_CHANNELS; i++) {
       channelState[i] = previousStates[i];
+      channelAutomationEnabled[i] = previousAutomation[i];
       setChannel(i, previousStates[i]);
     }
+    automationEnabled = anyChannelAutomationEnabled();
   }
   ledUpdateStatus();
   publishTelemetry();
@@ -594,10 +616,30 @@ void handleSetAll(JsonObject d) {
 
 void handleAutomation(JsonObject d) {
   if (!d.containsKey("enabled")) return;
-  bool previousAutomation = automationEnabled;
-  automationEnabled = d["enabled"].as<bool>();
-  if (automationEnabled) for (int i = 0; i < NUM_CHANNELS; i++) channelTimer[i] = millis();
-  if (!saveSettings()) automationEnabled = previousAutomation;
+  bool enabled = d["enabled"].as<bool>();
+  bool previousAutomation[NUM_CHANNELS];
+  for (int i = 0; i < NUM_CHANNELS; i++) {
+    previousAutomation[i] = channelAutomationEnabled[i];
+  }
+
+  if (d.containsKey("channel")) {
+    int channel = d["channel"].as<int>() - 1;
+    if (channel < 0 || channel >= NUM_CHANNELS) return;
+    channelAutomationEnabled[channel] = enabled;
+    if (enabled) channelTimer[channel] = millis();
+  } else {
+    for (int i = 0; i < NUM_CHANNELS; i++) {
+      channelAutomationEnabled[i] = enabled;
+      if (enabled) channelTimer[i] = millis();
+    }
+  }
+
+  if (!saveSettings()) {
+    for (int i = 0; i < NUM_CHANNELS; i++) {
+      channelAutomationEnabled[i] = previousAutomation[i];
+    }
+    automationEnabled = anyChannelAutomationEnabled();
+  }
   ledUpdateStatus();
   publishTelemetry();
 }
@@ -734,12 +776,13 @@ void publishTelemetry() {
   data["heap"]       = ESP.getFreeHeap();
   data["broker_ip"]  = mqtt_broker_ip.toString();
   data["ntp_synced"] = ntpSynced;
-  data["automation"] = automationEnabled;
+  data["automation"] = anyChannelAutomationEnabled();
   JsonArray ch = data.createNestedArray("channels");
   for (int i = 0; i < NUM_CHANNELS; i++) {
     JsonObject o = ch.createNestedObject();
     o["id"]    = i + 1;
     o["state"] = channelState[i];
+    o["automation"] = channelAutomationEnabled[i];
     o["on_s"]  = channelOnMs[i] / 1000.0;
     o["off_s"] = channelOffMs[i] / 1000.0;
     unsigned long elapsed = millis() - channelTimer[i];
@@ -767,7 +810,7 @@ void updateChannels() {
       }
       continue;
     }
-    if (automationEnabled) {
+    if (channelAutomationEnabled[i]) {
       unsigned long period = channelState[i] ? channelOnMs[i] : channelOffMs[i];
       if (now - channelTimer[i] >= period) {
         channelState[i] = !channelState[i];

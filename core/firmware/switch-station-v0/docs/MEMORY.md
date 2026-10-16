@@ -8,7 +8,7 @@
 ## Resources
 - Free heap after boot: ~250 KB (measured, TBD)
 - Static buffers: WiFiClient + PubSubClient + ArduinoJson `<768>` envelope
-- EEPROM: 64 bytes reserved (uses ~50)
+- EEPROM: 64 bytes reserved (uses ~54, including per-channel automation flags)
 
 ## Notes
 - ArduinoJson v6 used (`DynamicJsonDocument`) to allow runtime-sized payloads

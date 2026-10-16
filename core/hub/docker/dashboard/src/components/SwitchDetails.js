@@ -55,14 +55,17 @@ export default function SwitchDetails({
     });
     if (
       pendingAutomation !== null &&
-      device.telemetry.automation === pendingAutomation
+      channels[pendingAutomation.channel - 1]?.automation === pendingAutomation.enabled
     ) {
       setPendingAutomation(null);
     }
-    if (pendingAllOff && channels.every((channel) => !channel.state)) {
+    if (
+      pendingAllOff &&
+      channels.every((channel) => !channel.state && !channel.automation)
+    ) {
       setPendingAllOff(false);
     }
-  }, [device.telemetry, draftDirty, hasTelemetry, channels, pendingAutomation, pendingAllOff]);
+  }, [draftDirty, hasTelemetry, channels, pendingAutomation, pendingAllOff]);
 
   const isOnline = brokerConnected && device.status === "online";
 
@@ -81,11 +84,11 @@ export default function SwitchDetails({
     }
   }
 
-  async function setAutomation(enabled) {
+  async function setAutomation(channel, enabled) {
     setActionError(null);
-    setPendingAutomation(enabled);
+    setPendingAutomation({ channel, enabled });
     try {
-      await onCommand({ action: "automation", enabled });
+      await onCommand({ action: "automation", channel, enabled });
     } catch (commandError) {
       setActionError(commandError.message || "Automation command could not be sent");
       setPendingAutomation(null);
@@ -189,29 +192,13 @@ export default function SwitchDetails({
           </button>
         </div>
 
-        <div className="mb-6 flex items-center justify-between border-y border-zinc-200 py-4 dark:border-zinc-800">
-          <div>
-            <h3 className="font-medium">Automatic cycling</h3>
-            <p className="mt-0.5 text-xs text-zinc-500">Each output alternates using its on/off timer.</p>
-          </div>
-          <label className="flex items-center gap-2 text-sm">
-            <input
-              type="checkbox"
-              checked={Boolean(device.telemetry?.automation)}
-              disabled={!isOnline || !hasTelemetry || pendingAutomation !== null}
-              onChange={(event) => setAutomation(event.target.checked)}
-              className="h-4 w-4 accent-emerald-700"
-            />
-            <span>{pendingAutomation ? "Updating…" : device.telemetry?.automation ? "On" : "Off"}</span>
-          </label>
-        </div>
-
         <div className="overflow-x-auto">
-          <table className="w-full min-w-[620px] text-left text-sm">
+          <table className="w-full min-w-[720px] text-left text-sm">
             <thead className="text-xs uppercase text-zinc-500">
               <tr>
                 <th className="pb-2 pr-3 font-medium">Output</th>
                 <th className="pb-2 px-2 font-medium">Relay state</th>
+                <th className="pb-2 px-2 font-medium">Auto cycle</th>
                 <th className="pb-2 px-2 font-medium">On seconds</th>
                 <th className="pb-2 px-2 font-medium">Off seconds</th>
                 <th className="pb-2 pl-2 font-medium">Auto-off</th>
@@ -223,6 +210,7 @@ export default function SwitchDetails({
                 const isOn = Boolean(channel?.state);
                 const nextState = !isOn;
                 const pending = pendingChannel?.channel === index + 1;
+                const pendingAuto = pendingAutomation?.channel === index + 1;
                 return (
                   <tr key={channel?.id ?? index + 1} className="border-t border-zinc-200 dark:border-zinc-800">
                     <th className="py-3 pr-3 font-medium">SSR {index + 1}</th>
@@ -236,6 +224,23 @@ export default function SwitchDetails({
                       >
                         {pending ? "Updating…" : isOn ? "ON" : "OFF"}
                       </button>
+                    </td>
+                    <td className="px-2 py-3">
+                      <label className="flex items-center gap-2">
+                        <input
+                          type="checkbox"
+                          checked={Boolean(channel?.automation)}
+                          disabled={!isOnline || !hasTelemetry || pendingAuto}
+                          onChange={(event) =>
+                            setAutomation(index + 1, event.target.checked)
+                          }
+                          className="h-4 w-4 accent-emerald-700"
+                          aria-label={`Enable automatic cycling for SSR ${index + 1}`}
+                        />
+                        <span className="text-xs text-zinc-500">
+                          {pendingAuto ? "Updating…" : channel?.automation ? "On" : "Off"}
+                        </span>
+                      </label>
                     </td>
                     <td className="px-2 py-3">
                       <input

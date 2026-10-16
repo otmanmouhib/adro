@@ -1,5 +1,9 @@
 # Switch Station V0 Firmware Changelog
 
+## [1.0.44] - 2026-10-16
+### Added
+- Independent per-SSR automatic cycling settings persisted in EEPROM and reported in telemetry.
+
 ## [1.0.43] - 2026-10-16
 ### Fixed
 - Clear retained claim commands after transitions to prevent replay-driven reboot loops.
