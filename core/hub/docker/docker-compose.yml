@@ -22,8 +22,7 @@ services:
     container_name: adro-portainer
     restart: unless-stopped
     ports:
-      - "9443:9443"     # HTTPS UI
-      - "8000:8000"     # Edge agent tunnel (optional)
+      - "9443:9443"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - /opt/adro-data/portainer:/data
