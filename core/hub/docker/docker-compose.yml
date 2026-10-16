@@ -17,6 +17,25 @@ services:
       - /sys/class/net:/host-sys/class/net:ro
     networks:
       - adro-net
+
+
+  watchtower:
+    image: containrrr/watchtower:latest
+    container_name: adro-watchtower
+    restart: unless-stopped
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      - WATCHTOWER_CLEANUP=true
+      - WATCHTOWER_POLL_INTERVAL=86400
+      - WATCHTOWER_LABEL_ENABLE=true
+      - WATCHTOWER_INCLUDE_STOPPED=false
+      - WATCHTOWER_REVIVE_STOPPED=false
+      - TZ=Africa/Casablanca
+    networks:
+      - adro-net
+
+
   portainer:
     image: portainer/portainer-ce:latest
     container_name: adro-portainer
@@ -28,6 +47,20 @@ services:
       - /opt/adro-data/portainer:/data
     networks:
       - adro-net
+
+  portainer-agent:
+    image: portainer/agent:2.45.2
+    container_name: adro-portainer-agent
+    restart: unless-stopped
+    ports:
+      - "9001:9001"     # the agent tunnel port
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /var/lib/docker/volumes:/var/lib/docker/volumes
+    networks:
+      - adro-net
+
+
   dashboard:
     build: ./dashboard
     image: adro/dashboard-hub:0.1.0
