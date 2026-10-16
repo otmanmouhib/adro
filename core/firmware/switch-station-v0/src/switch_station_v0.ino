@@ -61,6 +61,7 @@ String topic_hello;
 String topic_bye;
 String topic_claimed;
 String topic_unclaimed;
+String topic_claim_ack;
 String topic_status;
 String topic_telemetry;
 String topic_command;
@@ -97,7 +98,7 @@ const unsigned long RECONNECT_BACKOFF_MAX = 60000;
 #define ADDR_CLAIMED      2
 #define ADDR_CHANNEL_BASE 8
 
-void saveSettings() {
+bool saveSettings() {
   EEPROM.write(ADDR_MAGIC, EEPROM_MAGIC);
   EEPROM.write(ADDR_AUTOMATION, automationEnabled ? 1 : 0);
   EEPROM.write(ADDR_CLAIMED, claimed ? 1 : 0);
@@ -108,8 +109,9 @@ void saveSettings() {
     EEPROM.put(base + 4, channelOffMs[i]);
     EEPROM.write(base + 8, channelState[i] ? 1 : 0);
   }
-  EEPROM.commit();
-  Serial.println("[EEPROM] saved");
+  bool saved = EEPROM.commit();
+  Serial.println(saved ? "[EEPROM] saved" : "[EEPROM] save failed");
+  return saved;
 }
 
 void loadSettings() {
@@ -263,6 +265,7 @@ void computeTopics() {
   topic_bye       = "adro/unclaimed/" + deviceMac + "/bye";
   topic_claimed   = base + "/claimed";
   topic_unclaimed = base + "/unclaimed";
+  topic_claim_ack = base + "/claim-ack";
   topic_status    = base + "/status";
   topic_telemetry = base + "/telemetry";
   topic_command   = base + "/command";
@@ -397,6 +400,18 @@ void flushOutbound(unsigned long windowMs = 1500) {
 // ======================================================
 //                     Claim handling
 // ======================================================
+void publishClaimAck(const char* requestId, bool ok, bool isClaimed) {
+  StaticJsonDocument<192> doc;
+  doc["mac"] = deviceMac;
+  doc["type"] = deviceType;
+  doc["requestId"] = requestId;
+  doc["ok"] = ok;
+  doc["claimed"] = isClaimed;
+  String out;
+  serializeJson(doc, out);
+  client.publish(topic_claim_ack.c_str(), out.c_str(), false);
+}
+
 void publishHello() {
   DynamicJsonDocument doc(256);
   doc["mac"]   = deviceMac;
@@ -422,6 +437,7 @@ static String extractMac(JsonObject d) {
 }
 
 void handleClaim(JsonObject d) {
+  const char* requestId = d["requestId"] | "";
   String mac = extractMac(d);
   if (mac.length() == 0) {
     Serial.println("[CLAIM] missing mac/device_id, ignoring");
@@ -440,14 +456,25 @@ void handleClaim(JsonObject d) {
     return;
   }
 
+  if (claimed) {
+    publishClaimAck(requestId, true, true);
+    return;
+  }
+
   Serial.printf("[CLAIM] ACCEPTED (mac=%s)\n", deviceMac.c_str());
 
   claimed = true;
-  saveSettings();
+  if (!saveSettings()) {
+    claimed = false;
+    publishClaimAck(requestId, false, false);
+    flushOutbound();
+    return;
+  }
   computeTopics();
 
   // Clear retained hello so dashboards stop showing this as unclaimed
   client.publish(topic_hello.c_str(), "", true);
+  publishClaimAck(requestId, true, true);
   flushOutbound(1500);
 
   ledBlink(C_GREEN, 3);
@@ -456,6 +483,7 @@ void handleClaim(JsonObject d) {
 }
 
 void handleUnclaim(JsonObject d) {
+  const char* requestId = d["requestId"] | "";
   String mac = extractMac(d);
   if (mac.length() == 0) {
     Serial.println("[CLAIM] unclaim: missing mac/device_id, ignoring");
@@ -463,13 +491,25 @@ void handleUnclaim(JsonObject d) {
   }
   if (mac != deviceMac) return;
 
+  if (!claimed) {
+    publishClaimAck(requestId, true, false);
+    return;
+  }
+
   Serial.println("[CLAIM] unclaimed, back to discovery");
   claimed = false;
-  saveSettings();
+  if (!saveSettings()) {
+    claimed = true;
+    publishClaimAck(requestId, false, true);
+    flushOutbound();
+    return;
+  }
   computeTopics();
 
+  client.publish(topic_status.c_str(), "", true);
   client.publish(topic_hello.c_str(), "", true);
   client.publish(topic_bye.c_str(), "{}", false);
+  publishClaimAck(requestId, true, false);
   flushOutbound(1200);
 
   ledBlink(C_RED, 3);
@@ -612,9 +652,11 @@ void reconnect() {
       client.subscribe(topic_command.c_str(), 1);
       client.subscribe(topic_config.c_str(),  1);
       client.subscribe(topic_unclaimed.c_str(), 1);
+      client.subscribe(topic_claimed.c_str(), 1);
       Serial.println("[MQTT] subscribed (claimed)");
     } else {
       client.subscribe(topic_claimed.c_str(), 1);
+      client.subscribe(topic_unclaimed.c_str(), 1);
       publishHello();
       Serial.println("[MQTT] subscribed (unclaimed)");
     }

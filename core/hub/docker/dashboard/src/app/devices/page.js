@@ -5,14 +5,27 @@ import ClaimDialog from "@/components/ClaimDialog";
 import {
   connectMqtt,
   HELLO_TOPIC,
-  STATUS_TOPIC,
   parseTopic,
+  requestClaimState,
+  STATUS_TOPIC,
 } from "@/lib/mqtt";
+
+const DEVICE_NAMES_KEY = "adro.deviceNames";
+
+function getSavedDeviceNames() {
+  try {
+    return JSON.parse(window.localStorage.getItem(DEVICE_NAMES_KEY) || "{}");
+  } catch {
+    return {};
+  }
+}
 
 export default function DevicesPage() {
   const [devices, setDevices] = useState({}); // mac -> device
   const [claiming, setClaiming] = useState(null);
   const [connected, setConnected] = useState(false);
+  const [changingClaim, setChangingClaim] = useState(null);
+  const [claimError, setClaimError] = useState(null);
 
   useEffect(() => {
     let client;
@@ -65,6 +78,22 @@ export default function DevicesPage() {
         const parsed = parseTopic(topic);
         if (!parsed) return;
 
+        if (parsed.kind === "status" && payload.length === 0) {
+          const savedName = getSavedDeviceNames()[parsed.mac];
+          setDevices((prev) => ({
+            ...prev,
+            [parsed.mac]: {
+              ...prev[parsed.mac],
+              mac: parsed.mac,
+              type: parsed.type,
+              name: prev[parsed.mac]?.name || savedName,
+              claimed: false,
+              status: "unclaimed",
+            },
+          }));
+          return;
+        }
+
         let data;
         try {
           data = JSON.parse(payload.toString());
@@ -74,17 +103,20 @@ export default function DevicesPage() {
 
         if (parsed.kind === "hello") {
           // hello payload: { mac, type, fw, ip, model, capabilities }
+          const savedName = getSavedDeviceNames()[parsed.mac];
           setDevices((prev) => ({
             ...prev,
             [parsed.mac]: {
               ...prev[parsed.mac],
               mac: parsed.mac,
               type: data.type || prev[parsed.mac]?.type || "unknown",
+              name: prev[parsed.mac]?.name || savedName,
               fw: data.fw,
               ip: data.ip,
               model: data.model || "unknown",
               capabilities: data.capabilities,
-              status: prev[parsed.mac]?.status || "unclaimed",
+              claimed: false,
+              status: "unclaimed",
               lastSeen: Date.now(),
             },
           }));
@@ -94,12 +126,15 @@ export default function DevicesPage() {
           // status payload: envelope with data.state = "online" | "offline"
           const state = data?.data?.state;
           if (!state) return;
+          const savedName = getSavedDeviceNames()[parsed.mac];
           setDevices((prev) => ({
             ...prev,
             [parsed.mac]: {
               ...prev[parsed.mac],
               mac: parsed.mac,
               type: parsed.type,
+              name: prev[parsed.mac]?.name || savedName,
+              claimed: state === "online" || state === "offline",
               status: state,
               lastSeen: Date.now(),
             },
@@ -114,14 +149,36 @@ export default function DevicesPage() {
     };
   }, []);
 
+  async function unclaimDevice(device) {
+    setChangingClaim(device.mac);
+    setClaimError(null);
+    try {
+      await requestClaimState(device, false);
+      const names = getSavedDeviceNames();
+      delete names[device.mac];
+      window.localStorage.setItem(DEVICE_NAMES_KEY, JSON.stringify(names));
+      setDevices((prev) => ({
+        ...prev,
+        [device.mac]: {
+          ...prev[device.mac],
+          claimed: false,
+          status: "unclaimed",
+          name: undefined,
+        },
+      }));
+    } catch (error) {
+      setClaimError(error.message || "Unclaim failed");
+    } finally {
+      setChangingClaim(null);
+    }
+  }
+
   const list = Object.values(devices);
 
   return (
     <div className="max-w-3xl">
       <div className="mb-8">
-        <h1 className="mb-3 text-3xl font-semibold tracking-tight">
-          Devices
-        </h1>
+        <h1 className="mb-3 text-3xl font-semibold tracking-tight">Devices</h1>
         <p className="leading-7 text-zinc-600 dark:text-zinc-400">
           Nearby Adro devices that have announced themselves on the local
           network. Select one to claim it to this hub.
@@ -138,6 +195,11 @@ export default function DevicesPage() {
           {connected ? "Connected to broker" : "Disconnected from broker"}
         </span>
       </div>
+      {claimError && (
+        <p className="mb-4 text-sm text-red-600 dark:text-red-400">
+          {claimError}
+        </p>
+      )}
 
       {list.length === 0 ? (
         <div className="rounded-lg border border-dashed border-zinc-300 p-10 text-center text-zinc-500 dark:border-zinc-700">
@@ -153,9 +215,7 @@ export default function DevicesPage() {
               className="flex flex-col gap-3 rounded-lg border border-zinc-200 p-5 dark:border-zinc-800"
             >
               <div>
-                <div className="font-medium">
-                  {d.name || d.model || d.mac}
-                </div>
+                <div className="font-medium">{d.name || d.model || d.mac}</div>
                 <div className="text-sm text-zinc-500">
                   {d.type} · {d.model || "unknown model"}
                 </div>
@@ -184,7 +244,16 @@ export default function DevicesPage() {
                 )}
               </div>
 
-              {!d.name && (
+              {d.claimed ? (
+                <button
+                  type="button"
+                  onClick={() => unclaimDevice(d)}
+                  disabled={changingClaim === d.mac}
+                  className="self-start rounded-md border border-zinc-300 px-3 py-1.5 text-sm font-medium hover:bg-zinc-100 disabled:opacity-50 dark:border-zinc-700 dark:hover:bg-zinc-800"
+                >
+                  {changingClaim === d.mac ? "Unclaiming…" : "Unclaim"}
+                </button>
+              ) : (
                 <button
                   type="button"
                   onClick={() => setClaiming(d)}
@@ -203,9 +272,15 @@ export default function DevicesPage() {
           device={claiming}
           onClose={() => setClaiming(null)}
           onClaimed={(updated) => {
+            const names = getSavedDeviceNames();
+            names[updated.mac] = updated.name;
+            window.localStorage.setItem(
+              DEVICE_NAMES_KEY,
+              JSON.stringify(names),
+            );
             setDevices((prev) => ({
               ...prev,
-              [updated.mac]: updated,
+              [updated.mac]: { ...updated, claimed: true },
             }));
             setClaiming(null);
           }}

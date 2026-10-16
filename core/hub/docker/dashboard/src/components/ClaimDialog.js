@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { connectMqtt, claimTopic } from "@/lib/mqtt";
+import { requestClaimState } from "@/lib/mqtt";
 
 export default function ClaimDialog({ device, onClose, onClaimed }) {
   const [name, setName] = useState("");
@@ -13,40 +13,24 @@ export default function ClaimDialog({ device, onClose, onClaimed }) {
     setBusy(true);
     setError(null);
 
-    let client;
     try {
-      client = await connectMqtt();
-
-      await new Promise((resolve, reject) => {
-        client.on("connect", () => {
-          // Firmware expects a flat payload: { mac, type }
-          client.publish(
-            claimTopic(device.type, device.mac),
-            JSON.stringify({ mac: device.mac, type: device.type }),
-            { qos: 1 },
-            (err) => (err ? reject(err) : resolve()),
-          );
-        });
-        client.on("error", reject);
-      });
+      await requestClaimState(device, true);
 
       onClaimed({ ...device, name, status: "claimed" });
     } catch (err) {
-      setError(err.message);
+      setError(err.message || "Claim failed");
       setBusy(false);
-    } finally {
-      if (client) client.end(true);
     }
   }
 
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
-      onClick={onClose}
     >
       <div
         className="w-full max-w-md rounded-lg bg-white p-6 shadow-xl dark:bg-zinc-900"
-        onClick={(e) => e.stopPropagation()}
+        role="dialog"
+        aria-modal="true"
       >
         <h2 className="mb-1 text-lg font-semibold">Claim device</h2>
         <p className="mb-1 text-sm text-zinc-500">
