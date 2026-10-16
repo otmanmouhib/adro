@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import ClaimDialog from "@/components/ClaimDialog";
+import DosingDetails from "@/components/DosingDetails";
 import SwitchDetails from "@/components/SwitchDetails";
 import {
   commandTopic,
@@ -305,7 +306,11 @@ export default function DevicesPage() {
                   </div>
                 )}
                 <div className="mt-4 text-sm font-medium text-emerald-800 dark:text-emerald-300">
-                  {d.claimed ? "Open switch controls" : "Claim this switch"}
+                  {d.claimed
+                    ? d.type === "dosing"
+                      ? "Open dosing controls"
+                      : "Open switch controls"
+                    : `Claim ${d.type === "dosing" ? "dosing station" : "switch"}`}
                   <span aria-hidden="true"> →</span>
                 </div>
               </button>
@@ -351,8 +356,18 @@ export default function DevicesPage() {
           }}
         />
       )}
-      {selectedDevice?.claimed && (
+      {selectedDevice?.claimed && selectedDevice.type === "switch" && (
         <SwitchDetails
+          device={selectedDevice}
+          brokerConnected={connected}
+          error={detailsError}
+          onClose={() => setSelectedMac(null)}
+          onCommand={(command) => sendDeviceCommand(selectedDevice, command)}
+          onSaveConfig={(config) => saveDeviceConfig(selectedDevice, config)}
+        />
+      )}
+      {selectedDevice?.claimed && selectedDevice.type === "dosing" && (
+        <DosingDetails
           device={selectedDevice}
           brokerConnected={connected}
           error={detailsError}
