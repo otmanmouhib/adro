@@ -6,14 +6,25 @@ const PUMP_COUNT = 2;
 
 function makeDraft(channels) {
   return Array.from({ length: PUMP_COUNT }, (_, index) => ({
-    doseMs: channels[index]?.dose_ms ?? 5000,
+    doseMl: channels[index]?.dose_ml ?? 5,
+    flowMlPerSecond: channels[index]?.flow_ml_s ?? 0,
     intervalSec: channels[index]?.interval_s ?? 3600,
   }));
 }
 
 function matchesConfig(channel, expected) {
-  return Number(channel.dose_ms) === expected.doseMs &&
+  return Number(channel.dose_ml) === expected.doseMl &&
+    Number(channel.flow_ml_s) === expected.flowMlPerSecond &&
     Number(channel.interval_s) === expected.intervalSec;
+}
+
+function estimatedDurationMs(doseMl, flowMlPerSecond) {
+  if (!Number.isFinite(doseMl) || !Number.isFinite(flowMlPerSecond) ||
+      doseMl < 5 || doseMl > 50 || flowMlPerSecond < 1 || flowMlPerSecond > 10) {
+    return null;
+  }
+  const durationMs = (doseMl / flowMlPerSecond) * 1000;
+  return durationMs >= 100 && durationMs <= 600000 ? durationMs : null;
 }
 
 export default function DosingDetails({
@@ -151,16 +162,20 @@ export default function DosingDetails({
   async function savePumpConfig(pumpNumber) {
     const index = pumpNumber - 1;
     const expected = {
-      doseMs: Number(draft[index].doseMs),
+      doseMl: Number(draft[index].doseMl),
+      flowMlPerSecond: Number(draft[index].flowMlPerSecond),
       intervalSec: Number(draft[index].intervalSec),
     };
     if (
-      !Number.isInteger(expected.doseMs) ||
-      expected.doseMs < 100 || expected.doseMs > 600000 ||
+      !Number.isFinite(expected.doseMl) ||
+      expected.doseMl < 5 || expected.doseMl > 50 ||
+      !Number.isFinite(expected.flowMlPerSecond) ||
+      expected.flowMlPerSecond < 1 || expected.flowMlPerSecond > 10 ||
+      estimatedDurationMs(expected.doseMl, expected.flowMlPerSecond) === null ||
       !Number.isInteger(expected.intervalSec) ||
       expected.intervalSec < 60 || expected.intervalSec > 604800
     ) {
-      setActionError("Dose time must be 100–600000 ms; interval must be 60–604800 seconds");
+      setActionError("Dose must be 5–50 mL, flow 1–10 mL/s, calculated run 100–600000 ms, and interval 60–604800 seconds");
       return;
     }
     setActionError(null);
@@ -169,7 +184,8 @@ export default function DosingDetails({
     try {
       await onSaveConfig({
         channel: pumpNumber,
-        dose_ms: expected.doseMs,
+        dose_ml: expected.doseMl,
+        flow_ml_s: expected.flowMlPerSecond,
         interval_s: expected.intervalSec,
       });
     } catch (commandError) {
@@ -232,6 +248,9 @@ export default function DosingDetails({
             const pumpNumber = index + 1;
             const pump = channels[index];
             const running = Boolean(pump?.state);
+            const doseMl = Number(draft[index].doseMl);
+            const flowMlPerSecond = Number(draft[index].flowMlPerSecond);
+            const doseDurationMs = estimatedDurationMs(doseMl, flowMlPerSecond);
             const configuring = pendingConfig[pumpNumber] !== undefined;
             const dosePending = pendingDose[pumpNumber] !== undefined;
             const stopPending = pendingStop[pumpNumber] !== undefined;
@@ -257,7 +276,7 @@ export default function DosingDetails({
                   <button
                     type="button"
                     onClick={() => runDose(pumpNumber)}
-                    disabled={!isOnline || !hasTelemetry || pumpBusy || dirtyPumps[pumpNumber] || dosePending || configuring}
+                    disabled={!isOnline || !hasTelemetry || pumpBusy || doseDurationMs === null || dirtyPumps[pumpNumber] || dosePending || configuring}
                     className="min-h-10 border border-emerald-700 bg-emerald-700 px-3 text-sm font-semibold text-white disabled:opacity-40"
                   >
                     {dosePending ? "Starting…" : "Dose now"}
@@ -278,21 +297,35 @@ export default function DosingDetails({
 
                 <div className="grid grid-cols-2 gap-3">
                   <label className="text-xs text-zinc-600 dark:text-zinc-400">
-                    <span className="mb-1 block">Dose time (ms)</span>
+                    <span className="mb-1 block">Dose volume (mL)</span>
                     <input
                       type="number"
-                      min="100"
-                      max="600000"
-                      step="100"
-                      value={draft[index].doseMs}
+                      min="5"
+                      max="50"
+                      step="0.1"
+                      value={draft[index].doseMl}
                       disabled={!hasTelemetry || configuring}
-                      onChange={(event) => updateDraft(pumpNumber, "doseMs", event.target.value)}
+                      onChange={(event) => updateDraft(pumpNumber, "doseMl", event.target.value)}
                       className="h-10 w-full min-w-0 border border-zinc-300 bg-transparent px-2 text-sm text-zinc-900 dark:border-zinc-700 dark:text-zinc-100"
-                      aria-label={`Pump ${pumpNumber} dose duration milliseconds`}
+                      aria-label={`Pump ${pumpNumber} dose volume milliliters`}
                     />
                   </label>
                   <label className="text-xs text-zinc-600 dark:text-zinc-400">
-                    <span className="mb-1 block">Interval (seconds)</span>
+                    <span className="mb-1 block">Flow rate (mL/s)</span>
+                    <input
+                      type="number"
+                      min="1"
+                      max="10"
+                      step="0.1"
+                      value={draft[index].flowMlPerSecond}
+                      disabled={!hasTelemetry || configuring}
+                      onChange={(event) => updateDraft(pumpNumber, "flowMlPerSecond", event.target.value)}
+                      className="h-10 w-full min-w-0 border border-zinc-300 bg-transparent px-2 text-sm text-zinc-900 dark:border-zinc-700 dark:text-zinc-100"
+                      aria-label={`Pump ${pumpNumber} flow rate milliliters per second`}
+                    />
+                  </label>
+                  <label className="col-span-2 text-xs text-zinc-600 dark:text-zinc-400">
+                    <span className="mb-1 block">Automatic interval (seconds)</span>
                     <input
                       type="number"
                       min="60"
@@ -306,6 +339,12 @@ export default function DosingDetails({
                     />
                   </label>
                 </div>
+
+                <p className="mt-3 text-xs text-zinc-500">
+                  {doseDurationMs === null
+                    ? "Enter a valid dose and measured flow rate to enable Dose Now."
+                    : `Estimated pump runtime: ${(doseDurationMs / 1000).toFixed(2)} s`}
+                </p>
 
                 <div className="mt-3 flex min-h-9 items-center justify-between gap-3">
                   <span className="text-xs text-zinc-500">
@@ -336,7 +375,7 @@ export default function DosingDetails({
           Dose now runs the configured duration and then stops automatically. Only use compatible pump drivers and tubing; verify the delivered volume before enabling automatic dosing.
         </p>
         {(error || actionError) && <p role="alert" className="mt-4 text-sm text-red-600 dark:text-red-400">{actionError || error}</p>}
-        <p className="mt-4 text-xs text-zinc-500">Dose: 100–600000 ms. Automatic interval: 60–604800 seconds. Pump settings save independently.</p>
+        <p className="mt-4 text-xs text-zinc-500">Dose volume: 5–50 mL. Flow: 1–10 mL/s. Automatic interval: 60–604800 seconds. Each pump saves independently.</p>
       </section>
     </div>
   );

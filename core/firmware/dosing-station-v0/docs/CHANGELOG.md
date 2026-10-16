@@ -4,6 +4,7 @@
 ### Added
 - Hub MQTT claim, status, command, configuration, and telemetry protocol.
 - Independent timed dosing controls and persisted configuration for two pumps.
+- Persist dose volume in mL and measured pump flow in mL/s; ESP derives safe runtime.
 - Dashboard telemetry reporting and safe pump-off behavior on boot.
 
 ## [1.0.0] - 2026-10-11
