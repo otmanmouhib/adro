@@ -8,7 +8,7 @@
 #include <mbedtls/sha256.h>
 #include <ESPmDNS.h>
 
-const char* currentFirmwareVersion = "1.0.12";
+const char* currentFirmwareVersion = "1.0.13";
 const char* otaManifestBase = "http://adro.local:8000";
 const char* mqttHost = "adro.local";
 const int mqttPort = 1883;
