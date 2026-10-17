@@ -1,0 +1,7 @@
+# OTA data (firmware binaries, manifests) — managed by FileBrowser, not git
+../ota/*
+!../ota/nginx.conf
+
+# FileBrowser runtime DB and settings
+ota-fb-config/
+docker-compose.yml.pre-ota.*
