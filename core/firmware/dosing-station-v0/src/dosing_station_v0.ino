@@ -15,8 +15,6 @@ const int mqttPort = 1883;
 const char* ssid = "Tenda_2AAA80";
 const char* wifiPassword = "";
 
-#define ENABLE_LOCAL_AUTOMATION 0
-
 const int NUM_PUMPS = 2;
 const int PUMP_IN1[NUM_PUMPS] = {26, 14};
 const int PUMP_IN2[NUM_PUMPS] = {27, 12};
@@ -26,8 +24,6 @@ const float MIN_DOSE_ML = 5.0f;
 const float MAX_DOSE_ML = 50.0f;
 const float MIN_FLOW_ML_PER_SEC = 1.0f;
 const float MAX_FLOW_ML_PER_SEC = 10.0f;
-const uint32_t MIN_INTERVAL_S = 60;
-const uint32_t MAX_INTERVAL_S = 604800;
 
 const unsigned long TELEMETRY_INTERVAL_MS = 15000;
 const unsigned long HELLO_INTERVAL_MS = 30000;
@@ -39,12 +35,12 @@ const int DAYLIGHT_OFFSET_SEC = 0;
 
 #define EEPROM_SIZE 128
 #define EEPROM_MAGIC 0xAE
-#define EEPROM_SCHEMA 0xD3
+#define EEPROM_SCHEMA 0xD4
 #define ADDR_MAGIC 0
 #define ADDR_SCHEMA 1
 #define ADDR_CLAIMED 2
 #define ADDR_PUMP_BASE 8
-#define PUMP_EEPROM_STRIDE 20
+#define PUMP_EEPROM_STRIDE 16
 
 #define LEGACY_DOSE_A_TIME 4
 #define LEGACY_DOSE_A_INTERVAL 8
@@ -55,8 +51,6 @@ const int DAYLIGHT_OFFSET_SEC = 0;
 
 float pumpDoseMl[NUM_PUMPS] = {5.0f, 5.0f};
 float pumpFlowMlPerSecond[NUM_PUMPS] = {0.0f, 0.0f};
-uint32_t pumpIntervalSec[NUM_PUMPS] = {3600, 3600};
-bool pumpAutomation[NUM_PUMPS] = {false, false};
 bool pumpRunning[NUM_PUMPS] = {false, false};
 uint32_t pumpLastDose[NUM_PUMPS] = {0, 0};
 uint32_t activeDoseMs[NUM_PUMPS] = {0, 0};
@@ -185,9 +179,7 @@ bool saveSettings() {
     int base = ADDR_PUMP_BASE + pump * PUMP_EEPROM_STRIDE;
     EEPROM.put(base, pumpDoseMl[pump]);
     EEPROM.put(base + 4, pumpFlowMlPerSecond[pump]);
-    EEPROM.put(base + 8, pumpIntervalSec[pump]);
-    EEPROM.write(base + 12, pumpAutomation[pump] ? 1 : 0);
-    EEPROM.put(base + 16, pumpLastDose[pump]);
+    EEPROM.put(base + 8, pumpLastDose[pump]);
   }
   bool saved = EEPROM.commit();
   Serial.println(saved ? "[EEPROM] settings saved" : "[EEPROM] commit failed");
@@ -208,8 +200,14 @@ void loadSettings() {
       int base = ADDR_PUMP_BASE + pump * PUMP_EEPROM_STRIDE;
       EEPROM.get(base, pumpDoseMl[pump]);
       EEPROM.get(base + 4, pumpFlowMlPerSecond[pump]);
-      EEPROM.get(base + 8, pumpIntervalSec[pump]);
-      pumpAutomation[pump] = EEPROM.read(base + 12) == 1;
+      EEPROM.get(base + 8, pumpLastDose[pump]);
+    }
+  } else if (schema == 0xD3) {
+    claimed = EEPROM.read(ADDR_CLAIMED) == 1;
+    for (int pump = 0; pump < NUM_PUMPS; pump++) {
+      int base = ADDR_PUMP_BASE + pump * 20;
+      EEPROM.get(base, pumpDoseMl[pump]);
+      EEPROM.get(base + 4, pumpFlowMlPerSecond[pump]);
       EEPROM.get(base + 16, pumpLastDose[pump]);
     }
   } else if (schema == 0xD2) {
@@ -220,17 +218,12 @@ void loadSettings() {
       EEPROM.get(base, oldDoseMs);
       pumpDoseMl[pump] = constrain(oldDoseMs / 1000.0f, MIN_DOSE_ML, MAX_DOSE_ML);
       pumpFlowMlPerSecond[pump] = 0.0f;
-      EEPROM.get(base + 4, pumpIntervalSec[pump]);
-      pumpAutomation[pump] = false;
       EEPROM.get(base + 12, pumpLastDose[pump]);
     }
   } else {
     uint32_t legacyDoseMs[NUM_PUMPS] = {5000, 5000};
-    uint32_t legacyIntervalMs[NUM_PUMPS] = {3600000, 3600000};
     EEPROM.get(LEGACY_DOSE_A_TIME, legacyDoseMs[0]);
-    EEPROM.get(LEGACY_DOSE_A_INTERVAL, legacyIntervalMs[0]);
     EEPROM.get(LEGACY_DOSE_B_TIME, legacyDoseMs[1]);
-    EEPROM.get(LEGACY_DOSE_B_INTERVAL, legacyIntervalMs[1]);
     EEPROM.get(LEGACY_LAST_DOSE_A, pumpLastDose[0]);
     EEPROM.get(LEGACY_LAST_DOSE_B, pumpLastDose[1]);
     claimed = false;
@@ -238,10 +231,8 @@ void loadSettings() {
       pumpDoseMl[pump] = constrain(legacyDoseMs[pump] / 1000.0f,
                                    MIN_DOSE_ML, MAX_DOSE_ML);
       pumpFlowMlPerSecond[pump] = 0.0f;
-      pumpIntervalSec[pump] = legacyIntervalMs[pump] / 1000UL;
-      pumpAutomation[pump] = false;
     }
-    Serial.println("[EEPROM] migrated legacy A/B timing; automation is off");
+    Serial.println("[EEPROM] migrated legacy A/B dose values; flow requires configuration");
   }
 
   for (int pump = 0; pump < NUM_PUMPS; pump++) {
@@ -252,19 +243,10 @@ void loadSettings() {
         pumpFlowMlPerSecond[pump] > MAX_FLOW_ML_PER_SEC) {
       pumpFlowMlPerSecond[pump] = 0.0f;
     }
-    if (pumpIntervalSec[pump] < MIN_INTERVAL_S ||
-        pumpIntervalSec[pump] > MAX_INTERVAL_S) {
-      pumpIntervalSec[pump] = 3600;
-    }
     pumpRunning[pump] = false;
     activeDoseMs[pump] = 0;
     pumpStartedAt[pump] = 0;
   }
-#if !ENABLE_LOCAL_AUTOMATION
-  for (int pump = 0; pump < NUM_PUMPS; pump++) {
-    pumpAutomation[pump] = false;
-  }
-#endif
   saveSettings();
 }
 
@@ -464,11 +446,9 @@ void publishTelemetry() {
     JsonObject channel = channels.createNestedObject();
     channel["id"] = pump + 1;
     channel["state"] = pumpRunning[pump];
-    channel["automation"] = pumpAutomation[pump];
     channel["dose_ml"] = pumpDoseMl[pump];
     channel["flow_ml_s"] = pumpFlowMlPerSecond[pump];
     channel["estimated_duration_ms"] = calculateDoseDurationMs(pump);
-    channel["interval_s"] = pumpIntervalSec[pump];
     channel["last_dose"] = pumpLastDose[pump];
     unsigned long elapsed = millis() - pumpStartedAt[pump];
     channel["remaining_ms"] = pumpRunning[pump] && activeDoseMs[pump] > elapsed
@@ -600,21 +580,6 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
     } else if (strcmp(action, "stop_all") == 0) {
       stopAllPumps();
       publishTelemetry();
-    } else if (strcmp(action, "automation") == 0) {
-      int pump = data["channel"].as<int>() - 1;
-      if (pump >= 0 && pump < NUM_PUMPS && data.containsKey("enabled")) {
-        bool previous = pumpAutomation[pump];
-        pumpAutomation[pump] = data["enabled"].as<bool>();
-#if !ENABLE_LOCAL_AUTOMATION
-        if (pumpAutomation[pump]) {
-          Serial.println("[AUTOMATION] rejected; compile-time automation is disabled");
-          pumpAutomation[pump] = false;
-        }
-#endif
-        if (pumpAutomation[pump]) pumpLastDose[pump] = nowSeconds();
-        if (!saveSettings()) pumpAutomation[pump] = previous;
-      }
-      publishTelemetry();
     } else if (strcmp(action, "reboot") == 0) {
       stopAllPumps();
       delay(300);
@@ -628,24 +593,19 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
     if (pump < 0 || pump >= NUM_PUMPS) return;
     float doseMl = data["dose_ml"] | pumpDoseMl[pump];
     float flowMlPerSecond = data["flow_ml_s"] | pumpFlowMlPerSecond[pump];
-    uint32_t intervalSec = data["interval_s"] | pumpIntervalSec[pump];
     if (!isfinite(doseMl) || doseMl < MIN_DOSE_ML || doseMl > MAX_DOSE_ML ||
         !isfinite(flowMlPerSecond) || flowMlPerSecond < 0.0f ||
-        flowMlPerSecond > MAX_FLOW_ML_PER_SEC ||
-        intervalSec < MIN_INTERVAL_S || intervalSec > MAX_INTERVAL_S) {
+        flowMlPerSecond > MAX_FLOW_ML_PER_SEC) {
       publishTelemetry();
       return;
     }
     float oldDoseMl = pumpDoseMl[pump];
     float oldFlowMlPerSecond = pumpFlowMlPerSecond[pump];
-    uint32_t oldInterval = pumpIntervalSec[pump];
     pumpDoseMl[pump] = doseMl;
     pumpFlowMlPerSecond[pump] = flowMlPerSecond;
-    pumpIntervalSec[pump] = intervalSec;
     if (!saveSettings()) {
       pumpDoseMl[pump] = oldDoseMl;
       pumpFlowMlPerSecond[pump] = oldFlowMlPerSecond;
-      pumpIntervalSec[pump] = oldInterval;
     }
     publishTelemetry();
   }
@@ -691,19 +651,6 @@ void updateDosing() {
     }
   }
   if (stoppedAny) publishTelemetry();
-#if ENABLE_LOCAL_AUTOMATION
-  if (!claimed || !ntpSynced || anyPumpRunning()) return;
-
-  uint32_t now = nowSeconds();
-  for (int pump = 0; pump < NUM_PUMPS; pump++) {
-    if (!pumpAutomation[pump]) continue;
-    if (pumpLastDose[pump] == 0 ||
-        now >= pumpLastDose[pump] + pumpIntervalSec[pump]) {
-      if (startDose(pump, pumpDoseMs[pump])) publishTelemetry();
-      return;
-    }
-  }
-#endif
 }
 
 void checkForUpdates() {
@@ -732,10 +679,9 @@ void printVitals() {
                 (millis() - startupTime) / 1000, client.connected(), claimed,
                 ntpSynced, ESP.getFreeHeap());
   for (int pump = 0; pump < NUM_PUMPS; pump++) {
-    Serial.printf(" pump%d=%d auto=%d dose=%.1fml flow=%.2fml/s interval=%lu",
-                  pump + 1, pumpRunning[pump], pumpAutomation[pump],
-            pumpDoseMl[pump], pumpFlowMlPerSecond[pump],
-                  (unsigned long)pumpIntervalSec[pump]);
+    Serial.printf(" pump%d=%d dose=%.1fml flow=%.2fml/s",
+            pump + 1, pumpRunning[pump],
+            pumpDoseMl[pump], pumpFlowMlPerSecond[pump]);
   }
   Serial.println();
 }
