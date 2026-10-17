@@ -443,7 +443,7 @@ void publishHello() {
   doc["type"]  = deviceType;
   doc["fw"]    = currentFirmwareVersion;
   doc["ip"]    = WiFi.localIP().toString();
-  doc["model"] = "switch-station-v0";
+  doc["model"] = "switch-v0";
   doc["capabilities"] = "4ch-ssr";
   String out;
   serializeJson(doc, out);
