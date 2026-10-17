@@ -57,7 +57,7 @@ uint32_t activeDoseMs[NUM_PUMPS] = {0, 0};
 unsigned long pumpStartedAt[NUM_PUMPS] = {0, 0};
 
 String deviceMac;
-const char* deviceType = "dosing";
+const char* deviceType = "doser";
 bool claimed = false;
 String topicHello;
 String topicBye;
@@ -361,7 +361,7 @@ void publishHello() {
   document["type"] = deviceType;
   document["fw"] = currentFirmwareVersion;
   document["ip"] = WiFi.localIP().toString();
-  document["model"] = "dosing-station-v0";
+  document["model"] = "doser-v0";
   document["capabilities"] = "2-dose-pumps";
   String payload;
   serializeJson(document, payload);
