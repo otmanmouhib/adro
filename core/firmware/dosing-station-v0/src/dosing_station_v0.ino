@@ -479,18 +479,34 @@ void performOTA(const char* firmwareUrl, const char* expectedHash = nullptr) {
   WiFiClient otaClient;
   HTTPClient http;
   http.setTimeout(10000);
-  if (!http.begin(otaClient, firmwareUrl)) return;
+  http.setReuse(false);
+  
   publishOtaStatus("download_started", firmwareUrl);
-  if (http.GET() != HTTP_CODE_OK) {
-    http.end();
-    publishOtaStatus("http_error");
+  
+  if (!http.begin(otaClient, firmwareUrl)) {
+    publishOtaStatus("error", "http_begin_failed");
     return;
   }
-  int contentLength = http.getSize();
-  if (contentLength <= 0 || contentLength > (int)(ESP.getFreeSketchSpace() - 0x1000) ||
-      !Update.begin(contentLength)) {
+  
+  int httpCode = http.GET();
+  if (httpCode != HTTP_CODE_OK) {
     http.end();
-    publishOtaStatus("invalid_size");
+    char errMsg[32];
+    snprintf(errMsg, sizeof(errMsg), "http_%d", httpCode);
+    publishOtaStatus("http_error", errMsg);
+    return;
+  }
+  
+  int contentLength = http.getSize();
+  if (contentLength <= 0 || contentLength > (int)(ESP.getFreeSketchSpace() - 0x1000)) {
+    http.end();
+    publishOtaStatus("invalid_size", "file_too_large_or_zero");
+    return;
+  }
+  
+  if (!Update.begin(contentLength)) {
+    http.end();
+    publishOtaStatus("invalid_size", "update_begin_failed");
     return;
   }
 
@@ -501,40 +517,61 @@ void performOTA(const char* firmwareUrl, const char* expectedHash = nullptr) {
   mbedtls_sha256_context context;
   mbedtls_sha256_init(&context);
   mbedtls_sha256_starts(&context, 0);
+  
+  int lastProgress = 0;
+
   while (http.connected() && written < (size_t)contentLength) {
     size_t available = stream->available();
     if (!available) { delay(1); continue; }
     size_t count = stream->readBytes((char*)buffer, min(available, sizeof(buffer)));
+    
     if (!count || Update.write(buffer, count) != count) {
       Update.abort();
       mbedtls_sha256_free(&context);
       http.end();
+      publishOtaStatus("write_error", "flash_write_failed");
       return;
     }
+    
     mbedtls_sha256_update(&context, buffer, count);
     written += count;
+    
+    // Publish progress every ~10%
+    int progress = (written * 100) / contentLength;
+    if (progress >= lastProgress + 10) {
+      lastProgress = progress;
+      char progMsg[16];
+      snprintf(progMsg, sizeof(progMsg), "%d%%", progress);
+      publishOtaStatus("progress", progMsg);
+    }
   }
+  
   mbedtls_sha256_finish(&context, hash);
   mbedtls_sha256_free(&context);
   http.end();
+  
   if (written != (size_t)contentLength) {
     Update.abort();
-    publishOtaStatus("size_mismatch");
+    publishOtaStatus("size_mismatch", "downloaded_size_mismatch");
     return;
   }
+  
   if (expectedHash && expectedHash[0]) {
     char hashString[65] = {0};
     for (int i = 0; i < 32; i++) sprintf(hashString + i * 2, "%02x", hash[i]);
     if (strcasecmp(hashString, expectedHash) != 0) {
       Update.abort();
-      publishOtaStatus("hash_mismatch");
+      publishOtaStatus("hash_mismatch", "sha256_mismatch");
       return;
     }
   }
+  
   if (Update.end(true)) {
-    publishOtaStatus("success");
+    publishOtaStatus("success", "rebooting");
     delay(500);
     ESP.restart();
+  } else {
+    publishOtaStatus("error", "update_end_failed");
   }
 }
 
