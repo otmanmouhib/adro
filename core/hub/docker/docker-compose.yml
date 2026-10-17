@@ -45,8 +45,8 @@ services:
     ports:
       - "8000:80"
     volumes:
-      - /home/kenaro/adro/core/hub/ota:/usr/share/nginx/html:ro
-      - /home/kenaro/adro/core/hub/ota/nginx.conf:/etc/nginx/nginx.conf:ro
+      - /home/kenaro/adro/core/hub/docker/ota:/usr/share/nginx/html:ro
+      - /home/kenaro/adro/core/hub/docker/ota/nginx.conf:/etc/nginx/nginx.conf:ro
     networks:
       - adro-net
 
