@@ -21,18 +21,17 @@ services:
 
   autossh:
     image: oaklight/autossh-tunnel:latest
-    container_name: hub-autossh
+    container_name: adro-hub-autossh
     restart: unless-stopped
     environment:
       PUID: ${PUID:-1000}
       PGID: ${PGID:-1000}
       TZ:   ${TZ:-UTC}
     volumes:
-      - ./autossh/config:/config:ro
-      - ./autossh/ssh:/home/autossh/.ssh:ro
+      - ./autossh/config:/etc/autossh/config
+      - ./autossh/ssh:/home/myuser/.ssh:ro
     networks:
       - adro-net
-
 
 
 
