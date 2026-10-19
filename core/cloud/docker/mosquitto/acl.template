@@ -1,0 +1,15 @@
+# Adro Cloud — Mosquitto ACL
+# One block per site. Copy-paste to add a new site.
+
+# ── Hub bridges (per-site, isolated) ─────────────────────
+# Format:
+#   user site-XXX
+#   topic readwrite adro/site-XXX/#
+
+# Example for site-kenaro:
+# user site-kenaro
+# topic readwrite adro/site-kenaro/#
+
+# ── Operator / admin (full access) ───────────────────────
+user adro-admin
+topic readwrite #

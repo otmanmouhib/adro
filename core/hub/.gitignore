@@ -1,0 +1,3 @@
+# OTA firmware data (managed by FileBrowser, not tracked)
+ota/*
+!ota/nginx.conf
