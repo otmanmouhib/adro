@@ -13,9 +13,3 @@ services:
       - /etc/mosquitto/passwd:/mosquitto/config/passwd
       - /etc/mosquitto/acl:/mosquitto/config/acl
       - /opt/adro-data/mosquitto-cloud:/mosquitto/data
-    networks:
-      - adro-cloud-net
-
-networks:
-  default:
-    name: adro-cloud-net
