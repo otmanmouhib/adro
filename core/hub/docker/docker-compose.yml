@@ -3,7 +3,7 @@ name: adro-hub
 services:
   mosquitto:
     build: ./mosquitto
-    image: index.docker.io/adrodocker/mosquitto-hub:latest
+    image: adrodocker/mosquitto-hub:latest
     container_name: adro-core-hub-mosquitto
     restart: unless-stopped
     labels:
@@ -35,25 +35,24 @@ services:
     networks:
       - adro-net
 
-
   watchtower:
     image: openserbia/watchtower:latest
     container_name: adro-core-hub-watchtower
     restart: unless-stopped
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-      - /home/kenaro/.docker/config.json:/config.json:ro
     environment:
       - WATCHTOWER_CLEANUP=true
       - WATCHTOWER_POLL_INTERVAL=86400
       - WATCHTOWER_LABEL_ENABLE=true
       - WATCHTOWER_INCLUDE_STOPPED=false
       - WATCHTOWER_REVIVE_STOPPED=false
+      - WATCHTOWER_WARN_ON_HEAD_FAILURE=never
       - TZ=Africa/Casablanca
+      - REPO_USER=adrodocker
+      - REPO_PASS=${REPO_PASS}
     networks:
       - adro-net
-
-
   ota-server:
     image: nginx:alpine
     container_name: adro-core-hub-ota
@@ -114,7 +113,7 @@ services:
 
   dashboard:
     build: ./dashboard
-    image: index.docker.io/adrodocker/dashboard-hub:latest
+    image: adrodocker/dashboard-hub:latest
     container_name: adro-core-hub-dashboard
     restart: unless-stopped
     labels:
