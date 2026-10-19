@@ -3,9 +3,11 @@ name: adro-hub
 services:
   mosquitto:
     build: ./mosquitto
-    image: adro/mosquitto-hub:0.1.0
-    container_name: adro-mosquitto
+    image: adro/mosquitto-hub:latest
+    container_name: adro-core-hub-mosquitto
     restart: unless-stopped
+    labels:
+      - "com.centurylinklabs.watchtower.enable=true"
     env_file:
       - /opt/adro-config/site.env
     ports:
@@ -21,7 +23,7 @@ services:
 
   autossh:
     image: oaklight/autossh-tunnel:latest
-    container_name: adro-hub-autossh
+    container_name: adro-core-hub-autossh
     restart: unless-stopped
     environment:
       PUID: ${PUID:-1000}
@@ -34,10 +36,9 @@ services:
       - adro-net
 
 
-
   watchtower:
-    image: containrrr/watchtower:latest
-    container_name: adro-watchtower
+    image: openserbia/watchtower:latest
+    container_name: adro-core-hub-watchtower
     restart: unless-stopped
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
@@ -54,7 +55,7 @@ services:
 
   ota-server:
     image: nginx:alpine
-    container_name: adro-ota
+    container_name: adro-core-hub-ota
     restart: unless-stopped
     cap_add:
       - CAP_NET_BIND_SERVICE
@@ -69,7 +70,7 @@ services:
 
   ota-filebrowser:
     image: hurlenko/filebrowser:latest
-    container_name: adro-ota-filebrowser
+    container_name: adro-core-hub-ota-filebrowser
     restart: unless-stopped
     user: "1000:1000"
     ports:
@@ -86,7 +87,7 @@ services:
 
   portainer:
     image: portainer/portainer-ce:latest
-    container_name: adro-portainer
+    container_name: adro-core-hub-portainer
     restart: unless-stopped
     ports:
       - "9443:9443"
@@ -96,9 +97,10 @@ services:
     networks:
       - adro-net
 
+
   portainer-agent:
     image: portainer/agent:2.45.2
-    container_name: adro-portainer-agent
+    container_name: adro-core-hub-portainer-agent
     restart: unless-stopped
     ports:
       - "9002:9001"
@@ -111,9 +113,11 @@ services:
 
   dashboard:
     build: ./dashboard
-    image: adro/dashboard-hub:0.1.0
-    container_name: adro-dashboard
+    image: adro/dashboard-hub:latest
+    container_name: adro-core-hub-dashboard
     restart: unless-stopped
+    labels:
+      - "com.centurylinklabs.watchtower.enable=true"
     environment:
       NEXT_PUBLIC_ADRO_BROKER_URL: "ws://adro.local:9001"
       NEXT_PUBLIC_ADRO_TITLE: "Adro Hub"
