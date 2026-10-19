@@ -20,14 +20,14 @@ jobs:
 
           # Hardware + firmware per board
           for board in switch-station-v0 dosing-station-v0 onesense-v0 sixsense-v0; do
-            if echo "$CHANGED" | grep -q "^hardware/$board/"; then
-              if ! echo "$CHANGED" | grep -q "^docs/01-hardware/$board.md"; then
+            if echo "$CHANGED" | grep -q "^core/hardware/$board/"; then
+              if ! echo "$CHANGED" | grep -q "^core/docs/01-hardware/$board.md"; then
                 echo "::warning::hardware/$board changed without docs/01-hardware/$board.md"
                 warn=1
               fi
             fi
-            if echo "$CHANGED" | grep -q "^firmware/$board/"; then
-              if ! echo "$CHANGED" | grep -q "^docs/02-firmware/$board.md"; then
+            if echo "$CHANGED" | grep -q "^core/firmware/$board/"; then
+              if ! echo "$CHANGED" | grep -q "^core/docs/02-firmware/$board.md"; then
                 echo "::warning::firmware/$board changed without docs/02-firmware/$board.md"
                 warn=1
               fi
@@ -35,40 +35,40 @@ jobs:
           done
 
           # Hub
-          if echo "$CHANGED" | grep -q "^hub/docker/"; then
-            if ! echo "$CHANGED" | grep -q "^docs/03-hub/hub-containers.md"; then
+          if echo "$CHANGED" | grep -q "^core/hub/docker/"; then
+            if ! echo "$CHANGED" | grep -q "^core/docs/03-hub/hub-containers.md"; then
               echo "::warning::hub/docker changed without docs/03-hub/hub-containers.md"
               warn=1
             fi
           fi
-          if echo "$CHANGED" | grep -q "^hub/image/"; then
-            if ! echo "$CHANGED" | grep -q "^docs/03-hub/hub-image.md"; then
+          if echo "$CHANGED" | grep -q "^core/hub/image/"; then
+            if ! echo "$CHANGED" | grep -q "^core/docs/03-hub/hub-image.md"; then
               echo "::warning::hub/image changed without docs/03-hub/hub-image.md"
               warn=1
             fi
           fi
-          if echo "$CHANGED" | grep -q "^hub/raspap/"; then
-            if ! echo "$CHANGED" | grep -q "^docs/03-hub/"; then
+          if echo "$CHANGED" | grep -q "^core/hub/raspap/"; then
+            if ! echo "$CHANGED" | grep -q "^core/docs/03-hub/"; then
               echo "::warning::hub/raspap changed without docs/03-hub/"
               warn=1
             fi
           fi
 
           # Cloud
-          if echo "$CHANGED" | grep -q "^cloud/docker/"; then
-            if ! echo "$CHANGED" | grep -q "^docs/04-cloud/ddns-containers.md"; then
+          if echo "$CHANGED" | grep -q "^core/cloud/docker/"; then
+            if ! echo "$CHANGED" | grep -q "^core/docs/04-cloud/ddns-containers.md"; then
               echo "::warning::cloud/docker changed without docs/04-cloud/ddns-containers.md"
               warn=1
             fi
           fi
-          if echo "$CHANGED" | grep -q "^cloud/image/"; then
-            if ! echo "$CHANGED" | grep -q "^docs/04-cloud/ddns-iso.md"; then
+          if echo "$CHANGED" | grep -q "^core/cloud/image/"; then
+            if ! echo "$CHANGED" | grep -q "^core/docs/04-cloud/ddns-iso.md"; then
               echo "::warning::cloud/image changed without docs/04-cloud/ddns-iso.md"
               warn=1
             fi
           fi
-          if echo "$CHANGED" | grep -q "^cloud/config/"; then
-            if ! echo "$CHANGED" | grep -q "^docs/04-cloud/ddns-firstboot.md"; then
+          if echo "$CHANGED" | grep -q "^core/cloud/config/"; then
+            if ! echo "$CHANGED" | grep -q "^core/docs/04-cloud/ddns-firstboot.md"; then
               echo "::warning::cloud/config changed without docs/04-cloud/ddns-firstboot.md"
               warn=1
             fi

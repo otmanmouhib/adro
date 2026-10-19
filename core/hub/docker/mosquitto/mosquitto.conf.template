@@ -1,0 +1,62 @@
+# Adro Hub — Mosquitto broker
+# Rendered at container start by docker-entrypoint.sh using env vars.
+# Never commit real credentials — they come from /opt/adro-config/site.env
+
+# ── Local MQTT listener (LAN) ───────────────────────────
+listener 1883 0.0.0.0
+protocol mqtt
+allow_anonymous true
+
+# ── WebSocket listener (browser dashboards) ─────────────
+listener 9001 0.0.0.0
+protocol websockets
+allow_anonymous true
+
+# ── Persistence ─────────────────────────────────────────
+persistence true
+persistence_location /mosquitto/data/
+
+# ── Logging ─────────────────────────────────────────────
+log_dest stdout
+# log_dest file /mosquitto/log/mosquitto.log   # use `docker logs` instead
+log_type all
+log_timestamp true
+log_timestamp_format %Y-%m-%dT%H:%M:%S
+
+# ── Limits ──────────────────────────────────────────────
+max_queued_bytes 524288000
+max_queued_messages 50000
+persistent_client_expiration 2d
+
+# BRIDGE_START
+# Everything below is only rendered when BRIDGE_USERNAME and BRIDGE_PASSWORD
+# are set in site.env. Otherwise docker-entrypoint.sh truncates the file here.
+
+connection bridge-to-remote
+address ${BRIDGE_REMOTE_HOST}:${BRIDGE_REMOTE_PORT}
+remote_username ${BRIDGE_USERNAME}
+remote_password ${BRIDGE_PASSWORD}
+remote_clientid ${BRIDGE_CLIENT_ID}
+cleansession false
+
+# ── Bridge health ───────────────────────────────────────
+try_private true
+bridge_protocol_version mqttv311
+notifications true
+notification_topic local/hub/bridge/status
+restart_timeout 30
+
+# ── Topic mapping ───────────────────────────────────────
+# Syntax: topic <pattern> <dir> <qos> <local-prefix> <remote-prefix>
+#   out → strip <local-prefix>, prepend <remote-prefix>, publish on remote
+#   in  → strip <remote-prefix>, prepend <local-prefix>, publish locally
+#
+# Both roots are mirrored during the farmLab → adro migration. Remove the
+# farmLab rule once every device has been reflashed to the adro/ tree.
+
+topic farmLab/# out 0 "" "hubs/${HUB_MAC}/"
+topic adro/#    out 0 "" "hubs/${HUB_MAC}/"
+
+# Cloud → hub commands: cloud publishes under cmd/<hub_mac>/...
+# The bridge strips that prefix and delivers the remainder locally as-is.
+topic cmd/${HUB_MAC}/# in 0 "" "cmd/${HUB_MAC}/"
