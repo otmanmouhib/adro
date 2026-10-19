@@ -7,7 +7,8 @@ services:
     container_name: adro-core-hub-mosquitto
     restart: unless-stopped
     labels:
-      - "com.centurylinklabs.watchtower.enable=true"
+      - "freshdock.enable=true"
+      - "freshdock.mode=live"
     env_file:
       - path: /opt/adro-config/site.env
     ports:
@@ -35,24 +36,21 @@ services:
     networks:
       - adro-net
 
-  watchtower:
-    image: openserbia/watchtower:latest
-    container_name: adro-core-hub-watchtower
+
+  freshdock:
+    image: ghcr.io/turbootzz/freshdock:latest
+    container_name: adro-core-hub-freshdock
     restart: unless-stopped
+    command: ["run"]
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
     environment:
-      - WATCHTOWER_CLEANUP=true
-      - WATCHTOWER_POLL_INTERVAL=86400
-      - WATCHTOWER_LABEL_ENABLE=true
-      - WATCHTOWER_INCLUDE_STOPPED=false
-      - WATCHTOWER_REVIVE_STOPPED=false
-      - WATCHTOWER_WARN_ON_HEAD_FAILURE=never
+      - FRESHDOCK_INTERVAL=86400
       - TZ=Africa/Casablanca
-      - REPO_USER=adrodocker
-      - REPO_PASS=${REPO_PASS}
     networks:
       - adro-net
+
+
   ota-server:
     image: nginx:alpine
     container_name: adro-core-hub-ota
@@ -117,7 +115,9 @@ services:
     container_name: adro-core-hub-dashboard
     restart: unless-stopped
     labels:
-      - "com.centurylinklabs.watchtower.enable=true"
+      - "freshdock.enable=true"
+      - "freshdock.mode=live"
+
     environment:
       NEXT_PUBLIC_ADRO_BROKER_URL: "ws://adro.local:9001"
       NEXT_PUBLIC_ADRO_TITLE: "Adro Hub"
