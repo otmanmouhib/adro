@@ -3,7 +3,7 @@ name: adro-hub
 services:
   mosquitto:
     build: ./mosquitto
-    image: adro/mosquitto-hub:latest
+    image: adrodocker/mosquitto-hub:latest
     container_name: adro-core-hub-mosquitto
     restart: unless-stopped
     labels:
@@ -113,7 +113,7 @@ services:
 
   dashboard:
     build: ./dashboard
-    image: adro/dashboard-hub:latest
+    image: adrodocker/dashboard-hub:latest
     container_name: adro-core-hub-dashboard
     restart: unless-stopped
     labels:
