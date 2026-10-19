@@ -10,7 +10,6 @@ services:
       - "com.centurylinklabs.watchtower.enable=true"
     env_file:
       - path: /opt/adro-config/site.env
-        required: false
     ports:
       - "1883:1883"
       - "9001:9001"
