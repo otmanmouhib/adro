@@ -1,5 +1,5 @@
-# ---- builder (runs on the build host's arch, output is arch-independent) ----
-FROM --platform=$BUILDPLATFORM node:22-alpine AS builder
+# ---- builder ----
+FROM node:22-alpine AS builder
 WORKDIR /app
 COPY package.json package-lock.json* ./
 RUN npm install --no-audit --no-fund
