@@ -18,8 +18,8 @@ require an accessible MQTT broker and compatible devices.
 
 ## Container
 
-The hub Compose stack provides `potman-dashboard` on port 8081 alongside the
-existing dashboard on port 80. From the parent directory, build and start it
+The hub Compose stack provides `potman-dashboard` on port 80 alongside the
+existing dashboard on port 8081. From the parent directory, build and start it
 with `docker compose up --build potman-dashboard` after preparing the hub
 configuration required by the Mosquitto service.
 

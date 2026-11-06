@@ -122,14 +122,14 @@ services:
       NEXT_PUBLIC_ADRO_BROKER_URL: "ws://adro.local:9001"
       NEXT_PUBLIC_ADRO_TITLE: "Adro Hub"
     ports:
-      - "80:3000"
+      - "8081:3000"
     depends_on:
       - mosquitto
     networks:
       - adro-net
 
   # Lightweight static (Preact + nginx) alternative to the Next.js dashboard.
-  # Runs on port 8081 so both can be compared side by side.
+  # Runs on port 80; the original dashboard remains available on port 8081.
   potman-dashboard:
     build: ./potman-dashboard
     image: adrodocker/potman-dashboard-hub:latest
@@ -140,7 +140,7 @@ services:
       # Leave empty to use ws://<browser host>:9001
       ADRO_BROKER_URL: ""
     ports:
-      - "8081:80"
+      - "80:80"
     depends_on:
       - mosquitto
     networks:
