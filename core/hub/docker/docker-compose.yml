@@ -137,6 +137,7 @@ services:
     restart: unless-stopped
     environment:
       ADRO_TITLE: "Adro Hub"
+      TZ: ${TZ:-Africa/Casablanca}
       # Leave empty to use ws://<browser host>:9001
       ADRO_BROKER_URL: ""
     ports:

@@ -174,11 +174,18 @@ uint32_t nowSeconds() {
   return timestamp ? (uint32_t)timestamp : millis() / 1000UL;
 }
 
-bool anyPumpRunning() {
+bool anyPumpRunningLocked() {
   for (int pump = 0; pump < NUM_PUMPS; pump++) {
     if (pumpRunning[pump]) return true;
   }
   return false;
+}
+
+bool anyPumpRunning() {
+  portENTER_CRITICAL(&doseTimerMux);
+  bool running = anyPumpRunningLocked();
+  portEXIT_CRITICAL(&doseTimerMux);
+  return running;
 }
 
 bool saveSettings() {
@@ -285,13 +292,15 @@ bool startDose(int pump, uint32_t durationMs, const String& requestId) {
   if (pump < 0 || pump >= NUM_PUMPS || !pumpStopTimers[pump]) return false;
   durationMs = constrain(durationMs, MIN_DOSE_MS, MAX_DOSE_MS);
   portENTER_CRITICAL(&doseTimerMux);
-  if (anyPumpRunning()) {
+  if (anyPumpRunningLocked()) {
     portEXIT_CRITICAL(&doseTimerMux);
     return false;
   }
+  portEXIT_CRITICAL(&doseTimerMux);
+  activeDoseRequestId[pump] = requestId;
+  portENTER_CRITICAL(&doseTimerMux);
   activeDoseMs[pump] = durationMs;
   pumpStartedAt[pump] = millis();
-  activeDoseRequestId[pump] = requestId;
   pumpTimerExpired[pump] = false;
   setPumpOutput(pump, true);
   portEXIT_CRITICAL(&doseTimerMux);
@@ -355,7 +364,7 @@ void computeTopics() {
 }
 
 String buildEnvelope(JsonDocument& data) {
-  DynamicJsonDocument envelope(1536);
+  DynamicJsonDocument envelope(2560);
   envelope["ts"] = nowSeconds();
   envelope["seq"] = sequenceNumber++;
   envelope["v"] = currentFirmwareVersion;
@@ -479,7 +488,7 @@ void handleUnclaim(JsonObject document) {
 
 void publishTelemetry() {
   if (!claimed || !client.connected()) return;
-  DynamicJsonDocument data(768);
+  DynamicJsonDocument data(1536);
   data["wifi"] = WiFi.status() == WL_CONNECTED;
   data["mqtt"] = client.connected();
   data["rssi"] = WiFi.RSSI();
@@ -488,18 +497,23 @@ void publishTelemetry() {
   data["heap"] = ESP.getFreeHeap();
   JsonArray channels = data.createNestedArray("channels");
   for (int pump = 0; pump < NUM_PUMPS; pump++) {
+    portENTER_CRITICAL(&doseTimerMux);
+    bool running = pumpRunning[pump];
+    unsigned long startedAt = pumpStartedAt[pump];
+    uint32_t doseMs = activeDoseMs[pump];
+    portEXIT_CRITICAL(&doseTimerMux);
     JsonObject channel = channels.createNestedObject();
     channel["id"] = pump + 1;
-    channel["state"] = pumpRunning[pump];
+    channel["state"] = running;
     channel["dose_ml"] = pumpDoseMl[pump];
     channel["flow_ml_s"] = pumpFlowMlPerSecond[pump];
     channel["estimated_duration_ms"] = calculateDoseDurationMs(pump);
     channel["last_dose"] = pumpLastDose[pump];
     channel["active_request_id"] = activeDoseRequestId[pump];
     channel["last_request_id"] = lastDoseRequestId[pump];
-    unsigned long elapsed = millis() - pumpStartedAt[pump];
-    channel["remaining_ms"] = pumpRunning[pump] && activeDoseMs[pump] > elapsed
-      ? activeDoseMs[pump] - elapsed
+    unsigned long elapsed = millis() - startedAt;
+    channel["remaining_ms"] = running && doseMs > elapsed
+      ? doseMs - elapsed
       : 0;
   }
   data["last_dose_command"]["request_id"] = lastDoseCommandRequestId;
@@ -620,7 +634,7 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
       lastDoseCommandChannel = pump + 1;
       lastDoseCommandAccepted = false;
       lastDoseCommandError = "";
-      if (requestId.length() > 64) {
+      if (requestId.length() > 40) {
         lastDoseCommandError = "Invalid dose request ID";
       } else if (pump >= 0 && pump < NUM_PUMPS) {
         uint32_t duration = calculateDoseDurationMs(pump);
@@ -708,11 +722,16 @@ void reconnect() {
 void updateDosing() {
   bool stoppedAny = false;
   for (int pump = 0; pump < NUM_PUMPS; pump++) {
-    if (pumpTimerExpired[pump]) {
+    portENTER_CRITICAL(&doseTimerMux);
+    bool timerExpired = pumpTimerExpired[pump];
+    bool running = pumpRunning[pump];
+    uint32_t doseMs = activeDoseMs[pump];
+    unsigned long startedAt = pumpStartedAt[pump];
+    portEXIT_CRITICAL(&doseTimerMux);
+    if (timerExpired) {
       stopPump(pump, true);
       stoppedAny = true;
-    } else if (pumpRunning[pump] &&
-        millis() - pumpStartedAt[pump] >= activeDoseMs[pump]) {
+    } else if (running && millis() - startedAt >= doseMs) {
       stopPump(pump, true);
       stoppedAny = true;
     }
@@ -780,8 +799,8 @@ void setup() {
   client.setCallback(mqttCallback);
   client.setKeepAlive(60);
   client.setSocketTimeout(30);
-  if (!client.setBufferSize(1024)) {
-    Serial.println("[MQTT] failed to allocate 1024-byte packet buffer");
+  if (!client.setBufferSize(1536)) {
+    Serial.println("[MQTT] failed to allocate 1536-byte packet buffer");
   }
   reconnect();
   startupTime = millis();
