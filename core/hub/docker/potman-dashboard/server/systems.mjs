@@ -144,7 +144,8 @@ const server = createServer(async (request, response) => {
 				input.measurements.ph < 0 ||
 				input.measurements.ph > 14 ||
 				!Number.isFinite(input.measurements?.tds) ||
-				input.measurements.tds < 0
+				input.measurements.tds < 0 ||
+				input.measurements.tds > Number.MAX_SAFE_INTEGER
 			)
 				throw new Error("Enter a pH reading from 0 to 14 and non-negative TDS");
 		} else if (semiMatch && request.method === "PATCH") {
@@ -247,7 +248,9 @@ const server = createServer(async (request, response) => {
 				return send(response, 404, { error: "Dose log not found" });
 			const event = history[eventIndex];
 			if (event.status !== "running")
-				return send(response, 409, { error: "Dose log entry is already finalized" });
+				return send(response, 409, {
+					error: "Dose log entry is already finalized",
+				});
 			if (
 				input.attempted.some((pump) => !event.pumps.includes(pump)) ||
 				input.completed.some((pump) => !input.attempted.includes(pump)) ||
