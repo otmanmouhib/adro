@@ -1,8 +1,13 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import DosingDetails from "@/components/DosingDetails";
+import SwitchDetails from "@/components/SwitchDetails";
 import { getSavedDeviceNames } from "@/lib/deviceNames";
 import {
+	commandTopic,
+	configTopic,
 	connectMqtt,
 	parseTopic,
+	publishMqtt,
 	STATUS_TOPIC,
 	TELEMETRY_TOPIC,
 } from "@/lib/mqtt";
@@ -23,10 +28,53 @@ function channelKey(assignment) {
 	return `${assignment.type}:${assignment.mac.replace(/[:-]/g, "").toLowerCase()}:${assignment.channel}`;
 }
 
+function deviceKey(device) {
+	return `${device.type}:${device.mac.replace(/[:-]/g, "").toLowerCase()}`;
+}
+
 function useAvailableDevices() {
 	const [devices, setDevices] = useState({});
 	const [connected, setConnected] = useState(false);
 	const [error, setError] = useState(null);
+	const clientRef = useRef(null);
+	const startingRef = useRef(new Map());
+	const [startingDoses, setStartingDoses] = useState({});
+
+	function clearStarting(key) {
+		const timer = startingRef.current.get(key);
+		if (timer === undefined) return;
+		clearTimeout(timer);
+		startingRef.current.delete(key);
+		setStartingDoses((current) => {
+			const next = { ...current };
+			delete next[key];
+			return next;
+		});
+	}
+
+	async function sendCommand(assignment, command) {
+		const key = deviceKey(assignment);
+		if (command.action === "dose_now") {
+			if (startingRef.current.has(key)) {
+				throw new Error("Another pump on this dosing station is starting");
+			}
+			startingRef.current.set(
+				key,
+				setTimeout(() => clearStarting(key), 10000),
+			);
+			setStartingDoses((current) => ({ ...current, [key]: true }));
+		}
+		try {
+			await publishMqtt(
+				clientRef.current,
+				commandTopic(assignment.type, assignment.mac),
+				command,
+			);
+		} catch (error) {
+			if (command.action === "dose_now") clearStarting(key);
+			throw error;
+		}
+	}
 
 	useEffect(() => {
 		let client;
@@ -38,6 +86,7 @@ function useAvailableDevices() {
 					client.end(true);
 					return;
 				}
+				clientRef.current = client;
 				client.on("connect", () => {
 					setConnected(true);
 					setError(null);
@@ -52,10 +101,13 @@ function useAvailableDevices() {
 						},
 					);
 				});
-				client.on("close", () => {
+				const disconnect = () => {
 					setConnected(false);
 					setDevices({});
-				});
+					for (const key of startingRef.current.keys()) clearStarting(key);
+				};
+				client.on("close", disconnect);
+				client.on("offline", disconnect);
 				client.on("error", (connectionError) =>
 					setError(`Broker error: ${connectionError.message}`),
 				);
@@ -80,12 +132,33 @@ function useAvailableDevices() {
 									? message?.data?.state
 									: null;
 						if (status !== "online" && status !== "offline") return;
+						if (
+							parsed.kind === "telemetry" &&
+							message.data.channels.some((channel) => channel.state)
+						) {
+							clearStarting(deviceKey(parsed));
+						}
+						if (parsed.kind === "status" && status === "online") {
+							publishMqtt(client, commandTopic(parsed.type, parsed.mac), {
+								action: "get_state",
+							}).catch((requestError) =>
+								setError(
+									`Could not request device state: ${requestError.message}`,
+								),
+							);
+						}
 						setDevices((current) => ({
 							...current,
 							[`${parsed.type}:${parsed.mac}`]: {
+								...current[`${parsed.type}:${parsed.mac}`],
 								type: parsed.type,
 								mac: parsed.mac,
 								status,
+								...(parsed.kind === "telemetry"
+									? { telemetry: message.data, fw: message.v }
+									: status === "offline"
+										? { telemetry: undefined }
+										: {}),
 							},
 						}));
 					} catch (parseError) {
@@ -99,11 +172,21 @@ function useAvailableDevices() {
 			});
 		return () => {
 			cancelled = true;
+			if (clientRef.current === client) clientRef.current = null;
 			if (client) client.end(true);
+			for (const timer of startingRef.current.values()) clearTimeout(timer);
+			startingRef.current.clear();
 		};
 	}, []);
 
-	return { devices: Object.values(devices), connected, error };
+	return {
+		devices: Object.values(devices),
+		connected,
+		error,
+		clientRef,
+		startingDoses,
+		sendCommand,
+	};
 }
 
 async function requestSystems(options) {
@@ -125,7 +208,14 @@ export default function SystemsPage() {
 	const [editing, setEditing] = useState(null);
 	const [saving, setSaving] = useState(false);
 	const [error, setError] = useState(null);
-	const { devices, connected, error: deviceError } = useAvailableDevices();
+	const {
+		devices,
+		connected,
+		error: deviceError,
+		clientRef,
+		startingDoses,
+		sendCommand,
+	} = useAvailableDevices();
 
 	async function load() {
 		try {
@@ -217,7 +307,8 @@ export default function SystemsPage() {
 			<h1 className="mb-3 text-3xl font-semibold tracking-tight">Systems</h1>
 			<p className="mb-6 leading-7 text-zinc-600 dark:text-zinc-400">
 				Create standalone hydroponic systems and assign their components to
-				claimed device channels. Assignments do not operate devices.
+				claimed device channels. Use the controls below each saved assignment to
+				operate its channel.
 			</p>
 			<div className="mb-5 text-xs text-zinc-500">
 				{connected ? "Connected to broker" : "Disconnected from broker"} ·
@@ -405,24 +496,66 @@ export default function SystemsPage() {
 											<p className="mb-4 text-sm text-zinc-500">
 												Standalone system
 											</p>
-											<dl className="grid gap-2 text-sm">
+											<div className="grid gap-4 sm:grid-cols-2">
 												{roles.map((role) => {
 													const assignment = system.assignments[role.key];
+													const device =
+														assignment &&
+														devices.find(
+															(item) =>
+																item.type === assignment.type &&
+																channelKey({
+																	...item,
+																	channel: assignment.channel,
+																}) === channelKey(assignment),
+														);
+													const selectedDevice =
+														device ||
+														(assignment && {
+															type: assignment.type,
+															mac: assignment.mac,
+															status: "offline",
+														});
+													const Controls =
+														assignment?.type === "switch"
+															? SwitchDetails
+															: DosingDetails;
 													return (
-														<div
-															key={role.key}
-															className="flex flex-wrap justify-between gap-2"
-														>
-															<dt>{role.label}</dt>
-															<dd className="text-zinc-500">
+														<section key={role.key} className="min-w-0">
+															<h3 className="font-medium">{role.label}</h3>
+															<p className="mb-3 text-xs text-zinc-500">
 																{assignment
 																	? `${deviceNames[assignment.mac] ? `${deviceNames[assignment.mac]} (${assignment.mac})` : assignment.mac} · ${assignment.type === "switch" ? "SSR" : "Pump"} ${assignment.channel}`
 																	: "Not assigned"}
-															</dd>
-														</div>
+															</p>
+															{assignment && (
+																<Controls
+																	key={channelKey(assignment)}
+																	device={selectedDevice}
+																	brokerConnected={connected}
+																	selectedChannel={assignment.channel}
+																	doseStarting={Boolean(
+																		startingDoses[deviceKey(assignment)],
+																	)}
+																	onCommand={(command) =>
+																		sendCommand(assignment, command)
+																	}
+																	onSaveConfig={(config) =>
+																		publishMqtt(
+																			clientRef.current,
+																			configTopic(
+																				assignment.type,
+																				assignment.mac,
+																			),
+																			config,
+																		)
+																	}
+																/>
+															)}
+														</section>
 													);
 												})}
-											</dl>
+											</div>
 											<div className="mt-5 flex gap-2">
 												<button
 													type="button"

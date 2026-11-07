@@ -113,6 +113,17 @@ export function configTopic(deviceType, mac) {
   return `adro/devices/${deviceType}/${mac}/config`;
 }
 
+export function publishMqtt(client, topic, data) {
+  if (!client?.connected) {
+    return Promise.reject(new Error("Dashboard is disconnected from the broker"));
+  }
+  return new Promise((resolve, reject) => {
+    client.publish(topic, JSON.stringify({ data }), { qos: 1 }, (error) =>
+      error ? reject(error) : resolve(),
+    );
+  });
+}
+
 export function parseTopic(topic) {
   const parts = topic.split("/");
   if (parts[0] !== "adro") return null;

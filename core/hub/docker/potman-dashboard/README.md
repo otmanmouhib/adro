@@ -32,9 +32,11 @@ configuration required by the Mosquitto service.
 
 The Systems page creates named standalone systems and maps their circulation
 pump, feed pump or valve, and solution A and B pumps to claimed device channels.
-Assignments do not operate devices. Only online devices are offered for new
-assignments; saved assignments remain visible if a device goes offline. A
-channel may belong to only one component across all systems.
+After saving an assignment, its channel's controls and settings appear on the
+system card. Controls are disabled while the device is offline or live
+telemetry is unavailable. Only online devices are offered for new assignments;
+saved assignments remain visible if a device goes offline. A channel may
+belong to only one component across all systems.
 
 System configurations are stored on the hub in the `potman-systems-data`
 Docker volume and shared between browsers. Device display names still come

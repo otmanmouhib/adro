@@ -30,6 +30,8 @@ export default function DosingDetails({
   onClose,
   onCommand,
   onSaveConfig,
+  selectedChannel,
+  doseStarting = false,
 }) {
   const channels = device.telemetry?.channels || [];
   const hasTelemetry = channels.length === PUMP_COUNT;
@@ -110,7 +112,7 @@ export default function DosingDetails({
 
   const isOnline = brokerConnected && device.status === "online";
   const pumpBusy = channels.some((channel) => channel.state) ||
-    Object.keys(pendingDose).length > 0;
+    Object.keys(pendingDose).length > 0 || doseStarting;
 
   async function runDose(pumpNumber) {
     setActionError(null);
@@ -195,14 +197,14 @@ export default function DosingDetails({
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-3 sm:p-6">
+    <div className={selectedChannel ? "" : "fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-3 sm:p-6"}>
       <section
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="dosing-details-title"
-        className="max-h-[92vh] w-full max-w-3xl overflow-y-auto rounded-lg bg-white p-5 shadow-2xl dark:bg-zinc-900 sm:p-7"
+        role={selectedChannel ? undefined : "dialog"}
+        aria-modal={selectedChannel ? undefined : "true"}
+        aria-labelledby={selectedChannel ? undefined : "dosing-details-title"}
+        className={selectedChannel ? "" : "max-h-[92vh] w-full max-w-3xl overflow-y-auto rounded-lg bg-white p-5 shadow-2xl dark:bg-zinc-900 sm:p-7"}
       >
-        <header className="mb-5 flex items-start justify-between gap-4 border-b border-zinc-200 pb-4 dark:border-zinc-800">
+        {!selectedChannel && <header className="mb-5 flex items-start justify-between gap-4 border-b border-zinc-200 pb-4 dark:border-zinc-800">
           <div>
             <p className="text-xs font-medium uppercase text-zinc-500">Dosing station · 2 mapped pumps</p>
             <h2 id="dosing-details-title" className="mt-1 text-xl font-semibold">
@@ -213,7 +215,7 @@ export default function DosingDetails({
           <button type="button" onClick={onClose} className="rounded-md border border-zinc-300 px-3 py-1.5 text-sm dark:border-zinc-700">
             Close
           </button>
-        </header>
+        </header>}
 
         <div className="mb-5 flex flex-wrap items-center justify-between gap-3 text-sm">
           <span className="text-zinc-600 dark:text-zinc-400">
@@ -221,18 +223,20 @@ export default function DosingDetails({
             {device.fw ? ` · firmware ${device.fw}` : ""}
             {device.telemetry?.rssi != null ? ` · Wi-Fi ${device.telemetry.rssi} dBm` : ""}
           </span>
-          <button
+          {!selectedChannel && <button
             type="button"
             onClick={stopAll}
             disabled={!isOnline || !hasTelemetry || pendingStopAll || !pumpBusy}
             className="min-h-10 border border-red-300 px-3 text-sm font-semibold text-red-700 disabled:opacity-40 dark:border-red-900 dark:text-red-300"
           >
             {pendingStopAll ? "Stopping…" : "Stop all pumps"}
-          </button>
+          </button>}
         </div>
 
-        <div className="grid gap-3 sm:grid-cols-2">
-          {Array.from({ length: PUMP_COUNT }, (_, index) => {
+        <div className={selectedChannel ? "grid gap-3" : "grid gap-3 sm:grid-cols-2"}>
+          {Array.from({ length: PUMP_COUNT }, (_, index) => index)
+            .filter((index) => !selectedChannel || index + 1 === selectedChannel)
+            .map((index) => {
             const pumpNumber = index + 1;
             const pump = channels[index];
             const running = Boolean(pump?.state);

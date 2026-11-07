@@ -11,16 +11,9 @@ import {
   STATUS_TOPIC,
   TELEMETRY_TOPIC,
   parseTopic,
+  publishMqtt,
   requestClaimState,
 } from "@/lib/mqtt";
-
-function publishMqtt(client, topic, data) {
-  return new Promise((resolve, reject) => {
-    client.publish(topic, JSON.stringify({ data }), { qos: 1 }, (error) =>
-      error ? reject(error) : resolve(),
-    );
-  });
-}
 
 export default function DevicesPage() {
   const [devices, setDevices] = useState({}); // mac -> device

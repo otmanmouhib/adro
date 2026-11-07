@@ -23,6 +23,7 @@ export default function SwitchDetails({
   onClose,
   onCommand,
   onSaveConfig,
+  selectedChannel,
 }) {
   const channels = device.telemetry?.channels || [];
   const hasTelemetry = channels.length === CHANNEL_COUNT;
@@ -200,14 +201,14 @@ export default function SwitchDetails({
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-3 sm:p-6">
+    <div className={selectedChannel ? "" : "fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-3 sm:p-6"}>
       <section
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="switch-details-title"
-        className="max-h-[92vh] w-full max-w-3xl overflow-y-auto rounded-lg bg-white p-5 shadow-2xl dark:bg-zinc-900 sm:p-7"
+        role={selectedChannel ? undefined : "dialog"}
+        aria-modal={selectedChannel ? undefined : "true"}
+        aria-labelledby={selectedChannel ? undefined : "switch-details-title"}
+        className={selectedChannel ? "" : "max-h-[92vh] w-full max-w-3xl overflow-y-auto rounded-lg bg-white p-5 shadow-2xl dark:bg-zinc-900 sm:p-7"}
       >
-        <header className="mb-6 flex items-start justify-between gap-4 border-b border-zinc-200 pb-4 dark:border-zinc-800">
+        {!selectedChannel && <header className="mb-6 flex items-start justify-between gap-4 border-b border-zinc-200 pb-4 dark:border-zinc-800">
           <div>
             <p className="text-xs font-medium uppercase text-zinc-500">Switch station · 4 SSR outputs</p>
             <h2 id="switch-details-title" className="mt-1 text-xl font-semibold">
@@ -222,7 +223,7 @@ export default function SwitchDetails({
           >
             Close
           </button>
-        </header>
+        </header>}
 
         <div className="mb-5 flex flex-wrap items-center justify-between gap-3 text-sm">
           <div className="text-zinc-600 dark:text-zinc-400">
@@ -230,18 +231,20 @@ export default function SwitchDetails({
             {device.fw ? ` · firmware ${device.fw}` : ""}
             {device.telemetry?.rssi != null ? ` · Wi-Fi ${device.telemetry.rssi} dBm` : ""}
           </div>
-          <button
+          {!selectedChannel && <button
             type="button"
             onClick={turnAllOff}
             disabled={!isOnline || !hasTelemetry || pendingAllOff}
             className="rounded-md border border-red-300 px-3 py-1.5 text-sm font-medium text-red-700 disabled:opacity-50 dark:border-red-900 dark:text-red-300"
           >
             {pendingAllOff ? "Switching off…" : "All outputs off"}
-          </button>
+          </button>}
         </div>
 
-        <div className="grid gap-3 sm:grid-cols-2">
-          {Array.from({ length: CHANNEL_COUNT }, (_, index) => {
+        <div className={selectedChannel ? "grid gap-3" : "grid gap-3 sm:grid-cols-2"}>
+          {Array.from({ length: CHANNEL_COUNT }, (_, index) => index)
+            .filter((index) => !selectedChannel || index + 1 === selectedChannel)
+            .map((index) => {
             const channelNumber = index + 1;
             const channel = channels[index];
             const isOn = Boolean(channel?.state);
