@@ -5,6 +5,7 @@
 	"type": "module",
 	"scripts": {
 		"dev": "vite",
+		"api": "node server/systems.mjs",
 		"build": "vite build",
 		"preview": "vite preview",
 		"lint": "biome check",

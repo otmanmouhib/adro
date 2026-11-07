@@ -8,6 +8,7 @@ import Wifi from "@/pages/Wifi";
 
 // Devices pulls in mqtt.js, so load it only when the page is opened.
 const Devices = lazy(() => import("@/pages/Devices"));
+const Systems = lazy(() => import("@/pages/Systems"));
 
 function App() {
   return (
@@ -20,6 +21,11 @@ function App() {
           <Route path="/devices">
             <Suspense fallback={null}>
               <Devices />
+            </Suspense>
+          </Route>
+          <Route path="/systems">
+            <Suspense fallback={null}>
+              <Systems />
             </Suspense>
           </Route>
         </Router>

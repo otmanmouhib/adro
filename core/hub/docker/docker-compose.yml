@@ -141,6 +141,8 @@ services:
       ADRO_BROKER_URL: ""
     ports:
       - "80:80"
+    volumes:
+      - potman-systems-data:/data
     depends_on:
       - mosquitto
     networks:
@@ -150,3 +152,6 @@ networks:
   adro-net:
     name: adro-net
     driver: bridge
+
+volumes:
+  potman-systems-data:

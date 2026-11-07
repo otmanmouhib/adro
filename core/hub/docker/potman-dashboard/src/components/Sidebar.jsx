@@ -5,6 +5,7 @@ const links = [
   { href: "/", label: "Home" },
   { href: "/wifi", label: "WiFi Setup" },
   { href: "/devices", label: "Devices" },
+  { href: "/systems", label: "Systems" },
 ];
 
 export default function Sidebar() {

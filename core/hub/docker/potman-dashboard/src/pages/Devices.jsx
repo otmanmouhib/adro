@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import ClaimDialog from "@/components/ClaimDialog";
 import DosingDetails from "@/components/DosingDetails";
 import SwitchDetails from "@/components/SwitchDetails";
+import { DEVICE_NAMES_KEY, getSavedDeviceNames } from "@/lib/deviceNames";
 import {
   commandTopic,
   configTopic,
@@ -12,16 +13,6 @@ import {
   parseTopic,
   requestClaimState,
 } from "@/lib/mqtt";
-
-const DEVICE_NAMES_KEY = "adro.deviceNames";
-
-function getSavedDeviceNames() {
-  try {
-    return JSON.parse(window.localStorage.getItem(DEVICE_NAMES_KEY) || "{}");
-  } catch {
-    return {};
-  }
-}
 
 function publishMqtt(client, topic, data) {
   return new Promise((resolve, reject) => {
