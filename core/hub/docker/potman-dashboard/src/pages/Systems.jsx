@@ -12,6 +12,7 @@ import {
 	STATUS_TOPIC,
 	TELEMETRY_TOPIC,
 } from "@/lib/mqtt";
+import { decideSemiAutomatic } from "../../server/dose-decision.mjs";
 
 const roles = [
 	{
@@ -34,12 +35,38 @@ function deviceKey(device) {
 	return `${device.type}:${device.mac.replace(/[:-]/g, "").toLowerCase()}`;
 }
 
+function sameDevice(first, second) {
+	return first.type === second.type && deviceKey(first) === deviceKey(second);
+}
+
+function freshTelemetry(device) {
+	return (
+		device?.status === "online" &&
+		device.telemetry &&
+		Date.now() - device.receivedAt < 45_000
+	);
+}
+
+function firmwareSupportsDoseRequests(version) {
+	const parts = String(version || "")
+		.split(".")
+		.map((part) => Number.parseInt(part, 10));
+	return (
+		parts.length >= 3 &&
+		[0, 1, 2].every((index) => Number.isInteger(parts[index])) &&
+		(parts[0] > 1 ||
+			(parts[0] === 1 && (parts[1] > 0 || (parts[1] === 0 && parts[2] >= 14))))
+	);
+}
+
 function useAvailableDevices() {
 	const [devices, setDevices] = useState({});
+	const devicesRef = useRef({});
 	const [connected, setConnected] = useState(false);
 	const [error, setError] = useState(null);
 	const clientRef = useRef(null);
 	const startingRef = useRef(new Map());
+	const automationLocksRef = useRef(new Set());
 	const [startingDoses, setStartingDoses] = useState({});
 
 	function clearStarting(key) {
@@ -57,6 +84,8 @@ function useAvailableDevices() {
 	async function sendCommand(assignment, command) {
 		const key = deviceKey(assignment);
 		if (command.action === "dose_now") {
+			if (automationLocksRef.current.has(key))
+				throw new Error("A semi-automatic dose is using this dosing station");
 			if (startingRef.current.has(key)) {
 				throw new Error("Another pump on this dosing station is starting");
 			}
@@ -105,6 +134,7 @@ function useAvailableDevices() {
 				});
 				const disconnect = () => {
 					setConnected(false);
+					devicesRef.current = {};
 					setDevices({});
 					for (const key of startingRef.current.keys()) clearStarting(key);
 				};
@@ -149,19 +179,28 @@ function useAvailableDevices() {
 								),
 							);
 						}
-						setDevices((current) => ({
-							...current,
-							[`${parsed.type}:${parsed.mac}`]: {
-								...current[`${parsed.type}:${parsed.mac}`],
+						const key = `${parsed.type}:${parsed.mac}`;
+						devicesRef.current = {
+							...devicesRef.current,
+							[key]: {
+								...devicesRef.current[key],
 								type: parsed.type,
 								mac: parsed.mac,
 								status,
 								...(parsed.kind === "telemetry"
-									? { telemetry: message.data, fw: message.v }
+									? {
+											telemetry: message.data,
+											fw: message.v,
+											receivedAt: Date.now(),
+										}
 									: status === "offline"
 										? { telemetry: undefined }
 										: {}),
 							},
+						};
+						setDevices((current) => ({
+							...current,
+							[key]: devicesRef.current[key],
 						}));
 					} catch (parseError) {
 						console.error("Invalid device message", topic, parseError);
@@ -181,6 +220,159 @@ function useAvailableDevices() {
 		};
 	}, []);
 
+	function getDevice(assignment) {
+		return devicesRef.current[deviceKey(assignment)];
+	}
+
+	function waitForTelemetry(assignment, predicate, timeoutMs = 12_000) {
+		const client = clientRef.current;
+		if (!client?.connected)
+			return Promise.reject(
+				new Error("Dashboard is disconnected from the broker"),
+			);
+		return new Promise((resolve, reject) => {
+			const finish = (error, value) => {
+				clearTimeout(timeout);
+				client.removeListener("message", onMessage);
+				client.removeListener("close", onDisconnect);
+				client.removeListener("offline", onDisconnect);
+				error ? reject(error) : resolve(value);
+			};
+			const onDisconnect = () =>
+				finish(
+					new Error(
+						"Broker disconnected while waiting for device confirmation",
+					),
+				);
+			const onMessage = (topic, payload) => {
+				const parsed = parseTopic(topic);
+				if (parsed?.kind !== "telemetry" || !sameDevice(parsed, assignment))
+					return;
+				try {
+					const message = JSON.parse(payload.toString());
+					const result = predicate(message.data, message);
+					if (result !== undefined) finish(null, result);
+				} catch (error) {
+					finish(error);
+				}
+			};
+			const timeout = setTimeout(
+				() =>
+					finish(new Error("Device did not confirm the requested dosing step")),
+				timeoutMs,
+			);
+			client.on("message", onMessage);
+			client.once("close", onDisconnect);
+			client.once("offline", onDisconnect);
+		});
+	}
+
+	async function doseAndConfirm(assignment, doseMl, circulation) {
+		const key = deviceKey(assignment);
+		if (automationLocksRef.current.has(key))
+			throw new Error("Another dose is already using this dosing station");
+		automationLocksRef.current.add(key);
+		try {
+			await doseAndConfirmLocked(assignment, doseMl, circulation);
+		} finally {
+			automationLocksRef.current.delete(key);
+		}
+	}
+
+	async function doseAndConfirmLocked(assignment, doseMl, circulation) {
+		const device = getDevice(assignment);
+		if (!freshTelemetry(device))
+			throw new Error("Dosing station telemetry is offline or stale");
+		if (!firmwareSupportsDoseRequests(device.fw))
+			throw new Error(
+				"Update the dosing station to firmware 1.0.14 or newer first",
+			);
+		const channelNumber = assignment.channel;
+		const channel = device.telemetry.channels?.[channelNumber - 1];
+		const flow = Number(channel?.flow_ml_s);
+		if (!channel || !Number.isFinite(flow) || flow < 1 || flow > 10)
+			throw new Error(
+				`Pump ${channelNumber} needs a saved flow rate from 1 to 10 mL/s`,
+			);
+		if (device.telemetry.channels.some((item) => item.state))
+			throw new Error("A dosing pump on this station is already running");
+		const duration = (doseMl / flow) * 1000;
+		if (!Number.isFinite(duration) || duration < 100 || duration > 600_000)
+			throw new Error(
+				`Pump ${channelNumber} dose and flow produce an unsafe run time`,
+			);
+
+		const configConfirmed = waitForTelemetry(assignment, (data) => {
+			const current = data.channels?.[channelNumber - 1];
+			return current &&
+				Number(current.dose_ml) === doseMl &&
+				Number(current.flow_ml_s) === flow
+				? current
+				: undefined;
+		});
+		await publishMqtt(
+			clientRef.current,
+			configTopic(assignment.type, assignment.mac),
+			{ channel: channelNumber, dose_ml: doseMl, flow_ml_s: flow },
+		);
+		await configConfirmed;
+
+		const requestId = crypto.randomUUID();
+		const acknowledgment = waitForTelemetry(assignment, (data) => {
+			const ack = data.last_dose_command;
+			if (ack?.request_id !== requestId) return undefined;
+			return ack.accepted
+				? { ok: true }
+				: { ok: false, error: ack.error || "Dosing station rejected the dose" };
+		});
+		await publishMqtt(
+			clientRef.current,
+			commandTopic(assignment.type, assignment.mac),
+			{ action: "dose_now", channel: channelNumber, request_id: requestId },
+		);
+		let monitoring = true;
+		const watchCirculation = async () => {
+			while (monitoring) {
+				const circulationDevice = getDevice(circulation);
+				const circulationChannel =
+					circulationDevice?.telemetry?.channels?.[circulation.channel - 1];
+				if (!freshTelemetry(circulationDevice) || !circulationChannel?.state)
+					throw new Error("Circulation SSR is no longer confirmed ON.");
+				await new Promise((resolve) => setTimeout(resolve, 500));
+			}
+		};
+		try {
+			const ack = await acknowledgment;
+			if (!ack.ok) throw new Error(ack.error);
+			const completed = waitForTelemetry(
+				assignment,
+				(data) => {
+					const current = data.channels?.[channelNumber - 1];
+					return current?.last_request_id === requestId && !current.state
+						? current
+						: undefined;
+				},
+				Math.ceil(duration) + 15_000,
+			);
+			await Promise.race([completed, watchCirculation()]);
+			monitoring = false;
+		} catch (error) {
+			monitoring = false;
+			try {
+				await publishMqtt(
+					clientRef.current,
+					commandTopic(assignment.type, assignment.mac),
+					{ action: "stop_pump", channel: channelNumber },
+				);
+			} catch (stopError) {
+				throw new Error(
+					`${error.message}; stop command also failed: ${stopError.message}`,
+				);
+			}
+			throw error;
+		}
+	}
+
 	return {
 		devices: Object.values(devices),
 		connected,
@@ -188,6 +380,8 @@ function useAvailableDevices() {
 		clientRef,
 		startingDoses,
 		sendCommand,
+		getDevice,
+		doseAndConfirm,
 	};
 }
 
@@ -198,6 +392,17 @@ async function requestSystems(options) {
 			`Systems service unavailable (HTTP ${response.status}). Start the systems API or check the dashboard containers.`,
 		);
 	}
+	const body = await response.json();
+	if (!response.ok)
+		throw new Error(body.error || `Request failed (${response.status})`);
+	return body;
+}
+
+async function requestSemiAutomatic(systemId, eventId, options) {
+	const response = await fetch(
+		`/api/systems/${encodeURIComponent(systemId)}/semi-automatic${eventId ? `/${encodeURIComponent(eventId)}` : ""}`,
+		options,
+	);
 	const body = await response.json();
 	if (!response.ok)
 		throw new Error(body.error || `Request failed (${response.status})`);
@@ -217,6 +422,8 @@ export default function SystemsPage() {
 		clientRef,
 		startingDoses,
 		sendCommand,
+		getDevice,
+		doseAndConfirm,
 	} = useAvailableDevices();
 
 	async function load() {
@@ -251,6 +458,116 @@ export default function SystemsPage() {
 		} finally {
 			setSaving(false);
 		}
+	}
+
+	async function runSemiAutomatic(system, measurements) {
+		const decision = decideSemiAutomatic(system.semiAutomatic, measurements, 0);
+		let blockedReason = "";
+		const circulation = system.assignments.circulationPump;
+		if (decision.allowed) {
+			if (!circulation) {
+				blockedReason = "Assign a circulation pump before requesting a dose.";
+			} else {
+				const circulationDevice = getDevice(circulation);
+				const circulationChannel =
+					circulationDevice?.telemetry?.channels?.[circulation.channel - 1];
+				if (
+					!freshTelemetry(circulationDevice) ||
+					circulationDevice.type !== "switch"
+				) {
+					blockedReason =
+						"Circulation pump is offline or its telemetry is stale.";
+				} else if (!circulationChannel?.state) {
+					blockedReason =
+						"Turn on the circulation pump and confirm its SSR state before dosing.";
+				}
+			}
+		}
+		if (decision.allowed && !blockedReason) {
+			for (const role of decision.pumps) {
+				const assignment = system.assignments[role];
+				if (!assignment) {
+					blockedReason = `Assign a pump for ${role} before requesting this dose.`;
+					break;
+				}
+				const device = getDevice(assignment);
+				if (!freshTelemetry(device) || device.type !== "dosing") {
+					blockedReason = `The ${role} dosing station is offline or its telemetry is stale.`;
+					break;
+				}
+				if (!firmwareSupportsDoseRequests(device.fw)) {
+					blockedReason = `Update the ${role} dosing station to firmware 1.0.14 or newer.`;
+					break;
+				}
+				const channels = device.telemetry.channels;
+				const pump = channels?.[assignment.channel - 1];
+				if (!pump || channels.some((channel) => channel.state)) {
+					blockedReason = `The ${role} pump is missing or another pump on its station is already running.`;
+					break;
+				}
+				const flow = Number(pump.flow_ml_s);
+				const duration = (system.semiAutomatic.doses[role] / flow) * 1000;
+				if (
+					!Number.isFinite(flow) ||
+					flow < 1 ||
+					flow > 10 ||
+					duration < 100 ||
+					duration > 600_000
+				) {
+					blockedReason = `The ${role} pump needs a valid saved flow rate and safe dose runtime.`;
+					break;
+				}
+			}
+		}
+
+		const event = await requestSemiAutomatic(system.id, null, {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ measurements, blockedReason }),
+		});
+		await load();
+		if (!event.allowed)
+			return { allowed: false, reason: event.reason, status: event.status };
+
+		const completed = [];
+		const attempted = [];
+		let status = "completed";
+		let reason = "";
+		try {
+			for (let index = 0; index < event.pumps.length; index++) {
+				const role = event.pumps[index];
+				if (index > 0) {
+					await new Promise((resolve) =>
+						setTimeout(resolve, system.semiAutomatic.mixingSeconds * 1000),
+					);
+					const liveCirculation = getDevice(circulation);
+					const channel =
+						liveCirculation?.telemetry?.channels?.[circulation.channel - 1];
+					if (!freshTelemetry(liveCirculation) || !channel?.state)
+						throw new Error("Circulation SSR is no longer confirmed ON.");
+				}
+				attempted.push(role);
+				await doseAndConfirm(
+					system.assignments[role],
+					system.semiAutomatic.doses[role],
+					circulation,
+				);
+				completed.push(role);
+			}
+		} catch (doseError) {
+			status = completed.length ? "partial" : "failed";
+			reason = doseError.message;
+		}
+		try {
+			await requestSemiAutomatic(system.id, event.id, {
+				method: "PATCH",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ status, attempted, completed, reason }),
+			});
+		} finally {
+			await load();
+		}
+		return { allowed: true, status, completed, pumps: event.pumps, reason };
 	}
 
 	async function createSystem(event) {
@@ -565,10 +882,19 @@ export default function SystemsPage() {
 													save(
 														state.systems.map((item) =>
 															item.id === system.id
-																? { ...item, semiAutomatic }
+																? {
+																		...item,
+																		semiAutomatic: {
+																			...item.semiAutomatic,
+																			...semiAutomatic,
+																		},
+																	}
 																: item,
 														),
 													)
+												}
+												onRun={(measurements) =>
+													runSemiAutomatic(system, measurements)
 												}
 											/>
 											<div className="mt-5 flex gap-2">

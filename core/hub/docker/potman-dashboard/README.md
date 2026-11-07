@@ -39,13 +39,15 @@ telemetry is unavailable. Only online devices are offered for new assignments;
 saved assignments remain visible if a device goes offline. A channel may
 belong to only one component across all systems.
 
-The semi-automatic dosing section can save pH and TDS thresholds, pump
-volumes, a daily activation limit, and a 5–30 second mixing delay. It can
-preview which pumps the entered readings would select. This is only a
-preliminary check: the daily limit is not enforced and no pumps are started.
-Semi-automatic execution, dosing logs, and firmware communication are not
-implemented. An SSR's ON state indicates a commanded output, not measured
-circulation or flow.
+Each standalone system stores its semi-automatic guardrails, dose volumes,
+daily pump-activation limit, and 5–30 second mixing delay with its assignments.
+The semi-automatic action accepts manual pH and TDS readings, enforces those
+guardrails and the system-local calendar-day limit, then doses assigned pumps
+sequentially with device confirmation. Results and declines are logged on that
+system. Circulation is checked using the assigned SSR's reported ON state; it
+does not measure water flow. Daily limits use the hub's local calendar date
+(the container defaults to `Africa/Casablanca`). Dosing stations must run
+firmware 1.0.14 or newer.
 
 System configurations are stored on the hub in the `potman-systems-data`
 Docker volume and shared between browsers. Device display names still come

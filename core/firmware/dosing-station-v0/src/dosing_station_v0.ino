@@ -7,8 +7,9 @@
 #include <EEPROM.h>
 #include <mbedtls/sha256.h>
 #include <ESPmDNS.h>
+#include <esp_timer.h>
 
-const char* currentFirmwareVersion = "1.0.13";
+const char* currentFirmwareVersion = "1.0.14";
 const char* otaManifestBase = "http://adro.local:8000";
 const char* mqttHost = "adro.local";
 const int mqttPort = 1883;
@@ -55,6 +56,15 @@ bool pumpRunning[NUM_PUMPS] = {false, false};
 uint32_t pumpLastDose[NUM_PUMPS] = {0, 0};
 uint32_t activeDoseMs[NUM_PUMPS] = {0, 0};
 unsigned long pumpStartedAt[NUM_PUMPS] = {0, 0};
+String activeDoseRequestId[NUM_PUMPS];
+String lastDoseRequestId[NUM_PUMPS];
+volatile bool pumpTimerExpired[NUM_PUMPS] = {false, false};
+esp_timer_handle_t pumpStopTimers[NUM_PUMPS] = {nullptr, nullptr};
+portMUX_TYPE doseTimerMux = portMUX_INITIALIZER_UNLOCKED;
+String lastDoseCommandRequestId;
+String lastDoseCommandError;
+int lastDoseCommandChannel = 0;
+bool lastDoseCommandAccepted = false;
 
 String deviceMac;
 const char* deviceType = "dosing";
@@ -256,12 +266,39 @@ void setPumpOutput(int pump, bool enabled) {
   pumpRunning[pump] = enabled;
 }
 
-bool startDose(int pump, uint32_t durationMs) {
-  if (pump < 0 || pump >= NUM_PUMPS || anyPumpRunning()) return false;
+void stopPump(int pump, bool completed);
+
+void doseStopTimerCallback(void* argument) {
+  int pump = (int)(intptr_t)argument;
+  if (pump < 0 || pump >= NUM_PUMPS) return;
+  portENTER_CRITICAL(&doseTimerMux);
+  if (pumpRunning[pump]) {
+    digitalWrite(PUMP_IN1[pump], LOW);
+    digitalWrite(PUMP_IN2[pump], LOW);
+    pumpRunning[pump] = false;
+    pumpTimerExpired[pump] = true;
+  }
+  portEXIT_CRITICAL(&doseTimerMux);
+}
+
+bool startDose(int pump, uint32_t durationMs, const String& requestId) {
+  if (pump < 0 || pump >= NUM_PUMPS || !pumpStopTimers[pump]) return false;
   durationMs = constrain(durationMs, MIN_DOSE_MS, MAX_DOSE_MS);
+  portENTER_CRITICAL(&doseTimerMux);
+  if (anyPumpRunning()) {
+    portEXIT_CRITICAL(&doseTimerMux);
+    return false;
+  }
   activeDoseMs[pump] = durationMs;
   pumpStartedAt[pump] = millis();
+  activeDoseRequestId[pump] = requestId;
+  pumpTimerExpired[pump] = false;
   setPumpOutput(pump, true);
+  portEXIT_CRITICAL(&doseTimerMux);
+  if (esp_timer_start_once(pumpStopTimers[pump], (uint64_t)durationMs * 1000) != ESP_OK) {
+    stopPump(pump, false);
+    return false;
+  }
   Serial.printf("[DOSE] pump %d ON for %lu ms\n", pump + 1,
                 (unsigned long)durationMs);
   return true;
@@ -282,13 +319,21 @@ uint32_t calculateDoseDurationMs(int pump) {
 
 void stopPump(int pump, bool completed) {
   if (pump < 0 || pump >= NUM_PUMPS) return;
+  if (pumpStopTimers[pump]) esp_timer_stop(pumpStopTimers[pump]);
+  portENTER_CRITICAL(&doseTimerMux);
   bool wasRunning = pumpRunning[pump];
+  bool timerExpired = pumpTimerExpired[pump];
+  if (timerExpired) completed = true;
+  pumpTimerExpired[pump] = false;
   setPumpOutput(pump, false);
   activeDoseMs[pump] = 0;
-  if (wasRunning && completed) {
+  portEXIT_CRITICAL(&doseTimerMux);
+  if ((wasRunning || timerExpired) && completed) {
     pumpLastDose[pump] = nowSeconds();
+    lastDoseRequestId[pump] = activeDoseRequestId[pump];
     saveSettings();
   }
+  activeDoseRequestId[pump] = "";
 }
 
 void stopAllPumps() {
@@ -450,11 +495,17 @@ void publishTelemetry() {
     channel["flow_ml_s"] = pumpFlowMlPerSecond[pump];
     channel["estimated_duration_ms"] = calculateDoseDurationMs(pump);
     channel["last_dose"] = pumpLastDose[pump];
+    channel["active_request_id"] = activeDoseRequestId[pump];
+    channel["last_request_id"] = lastDoseRequestId[pump];
     unsigned long elapsed = millis() - pumpStartedAt[pump];
     channel["remaining_ms"] = pumpRunning[pump] && activeDoseMs[pump] > elapsed
       ? activeDoseMs[pump] - elapsed
       : 0;
   }
+  data["last_dose_command"]["request_id"] = lastDoseCommandRequestId;
+  data["last_dose_command"]["channel"] = lastDoseCommandChannel;
+  data["last_dose_command"]["accepted"] = lastDoseCommandAccepted;
+  data["last_dose_command"]["error"] = lastDoseCommandError;
   String payload = buildEnvelope(data);
   if (client.publish(topicTelemetry.c_str(), payload.c_str(), false)) {
     lastTelemetry = millis();
@@ -564,13 +615,26 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
       publishTelemetry();
     } else if (strcmp(action, "dose_now") == 0) {
       int pump = data["channel"].as<int>() - 1;
-      if (pump >= 0 && pump < NUM_PUMPS) {
+      String requestId = data["request_id"] | "";
+      lastDoseCommandRequestId = requestId;
+      lastDoseCommandChannel = pump + 1;
+      lastDoseCommandAccepted = false;
+      lastDoseCommandError = "";
+      if (requestId.length() > 64) {
+        lastDoseCommandError = "Invalid dose request ID";
+      } else if (pump >= 0 && pump < NUM_PUMPS) {
         uint32_t duration = calculateDoseDurationMs(pump);
         if (duration == 0) {
+          lastDoseCommandError = "Dose volume or flow configuration is invalid";
           Serial.printf("[DOSE] rejected pump %d: volume/flow configuration invalid\n", pump + 1);
-        } else if (!startDose(pump, duration)) {
+        } else if (!startDose(pump, duration, requestId)) {
+          lastDoseCommandError = "Another pump is active or the safety timer could not start";
           Serial.printf("[DOSE] rejected pump %d; another pump is active\n", pump + 1);
+        } else {
+          lastDoseCommandAccepted = true;
         }
+      } else {
+        lastDoseCommandError = "Invalid pump channel";
       }
       publishTelemetry();
     } else if (strcmp(action, "stop_pump") == 0) {
@@ -644,7 +708,10 @@ void reconnect() {
 void updateDosing() {
   bool stoppedAny = false;
   for (int pump = 0; pump < NUM_PUMPS; pump++) {
-    if (pumpRunning[pump] &&
+    if (pumpTimerExpired[pump]) {
+      stopPump(pump, true);
+      stoppedAny = true;
+    } else if (pumpRunning[pump] &&
         millis() - pumpStartedAt[pump] >= activeDoseMs[pump]) {
       stopPump(pump, true);
       stoppedAny = true;
@@ -696,6 +763,13 @@ void setup() {
     digitalWrite(PUMP_IN2[pump], LOW);
     pinMode(PUMP_IN1[pump], OUTPUT);
     pinMode(PUMP_IN2[pump], OUTPUT);
+    esp_timer_create_args_t timerArgs = {};
+    timerArgs.callback = doseStopTimerCallback;
+    timerArgs.arg = (void*)(intptr_t)pump;
+    timerArgs.name = "dose-stop";
+    if (esp_timer_create(&timerArgs, &pumpStopTimers[pump]) != ESP_OK) {
+      Serial.printf("[DOSE] safety timer unavailable for pump %d\n", pump + 1);
+    }
   }
   EEPROM.begin(EEPROM_SIZE);
   loadSettings();

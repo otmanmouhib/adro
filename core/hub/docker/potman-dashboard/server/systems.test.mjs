@@ -98,8 +98,62 @@ test("systems persist, reject duplicate channels and protect concurrent edits", 
 		200,
 	);
 	const withSettings = await (await fetch(url)).json();
+	const semiAutomaticUrl = `${url}/tower-1/semi-automatic`;
+	const dose = await fetch(semiAutomaticUrl, {
+		method: "POST",
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify({ measurements: { ph: 6, tds: 400 } }),
+	});
+	assert.equal(dose.status, 200);
+	const doseEvent = await dose.json();
+	assert.equal(doseEvent.allowed, true);
+	assert.deepEqual(doseEvent.pumps, ["solutionA", "solutionB"]);
+	const completed = await fetch(`${semiAutomaticUrl}/${doseEvent.id}`, {
+		method: "PATCH",
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify({
+			status: "completed",
+			attempted: ["solutionA", "solutionB"],
+			completed: ["solutionA", "solutionB"],
+		}),
+	});
+	assert.equal(completed.status, 200);
+	const reservedDose = await fetch(semiAutomaticUrl, {
+		method: "POST",
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify({ measurements: { ph: 7, tds: 600 } }),
+	});
+	const reservedEvent = await reservedDose.json();
+	assert.equal(reservedEvent.allowed, true);
+	assert.deepEqual(reservedEvent.pumps, ["phDown"]);
+	const notAttempted = await fetch(`${semiAutomaticUrl}/${reservedEvent.id}`, {
+		method: "PATCH",
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify({
+			status: "failed",
+			attempted: [],
+			completed: [],
+			reason: "Device became unavailable before starting",
+		}),
+	});
+	assert.equal(notAttempted.status, 200);
+	const limitedDose = await fetch(semiAutomaticUrl, {
+		method: "POST",
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify({ measurements: { ph: 6, tds: 400 } }),
+	});
+	const limitedEvent = await limitedDose.json();
+	assert.equal(limitedEvent.allowed, false);
+	assert.match(limitedEvent.reason, /daily pump activation limit/i);
+	const withDoseLog = await (await fetch(url)).json();
+	assert.equal(withDoseLog.systems[0].semiAutomatic.history.length, 3);
+	assert.equal(
+		withDoseLog.systems[0].semiAutomatic.dailyUsage[doseEvent.date],
+		2,
+	);
 	process.kill("SIGTERM");
 	await once(process, "exit");
 	url = await start();
-	assert.deepEqual(await (await fetch(url)).json(), withSettings);
+	assert.notDeepEqual(withDoseLog, withSettings);
+	assert.deepEqual(await (await fetch(url)).json(), withDoseLog);
 });

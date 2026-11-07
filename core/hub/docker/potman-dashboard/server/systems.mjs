@@ -1,7 +1,8 @@
+import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { dirname, join } from "node:path";
-import { validateDoseConfig } from "./dose-decision.mjs";
+import { decideSemiAutomatic, validateDoseConfig } from "./dose-decision.mjs";
 
 const dataFile = process.env.ADRO_SYSTEMS_FILE || "/data/systems.json";
 const port = Number(process.env.PORT || 3001);
@@ -89,13 +90,32 @@ async function readJson(request) {
 	return JSON.parse(body);
 }
 
+function dateKey(date = new Date()) {
+	return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+}
+
+async function writeState(next) {
+	await mkdir(dirname(dataFile), { recursive: true });
+	const temporary = join(dirname(dataFile), `.systems-${process.pid}.tmp`);
+	await writeFile(temporary, JSON.stringify(next), { mode: 0o600 });
+	await rename(temporary, dataFile);
+	state = next;
+}
+
 let state = await loadState();
 let writes = Promise.resolve();
 const server = createServer(async (request, response) => {
-	if (request.url !== "/api/systems")
+	const semiMatch = request.url.match(
+		/^\/api\/systems\/([a-zA-Z0-9-]{1,80})\/semi-automatic(?:\/([a-f0-9-]{1,80}))?$/,
+	);
+	if (request.url !== "/api/systems" && !semiMatch)
 		return send(response, 404, { error: "Not found" });
 	if (request.method === "GET") return send(response, 200, state);
-	if (request.method !== "PUT")
+	if (
+		request.method !== "PUT" &&
+		request.method !== "POST" &&
+		request.method !== "PATCH"
+	)
 		return send(response, 405, { error: "Method not allowed" });
 	if (!request.headers["content-type"]?.startsWith("application/json")) {
 		return send(response, 415, {
@@ -117,24 +137,172 @@ const server = createServer(async (request, response) => {
 	let input;
 	try {
 		input = await readJson(request);
-		validateSystems(input.systems);
-		if (!Number.isSafeInteger(input.revision) || input.revision < 0)
-			throw new Error("Invalid revision");
+		if (semiMatch && request.method === "POST") {
+			if (semiMatch[2]) return send(response, 404, { error: "Not found" });
+			if (
+				!Number.isFinite(input.measurements?.ph) ||
+				input.measurements.ph < 0 ||
+				input.measurements.ph > 14 ||
+				!Number.isFinite(input.measurements?.tds) ||
+				input.measurements.tds < 0
+			)
+				throw new Error("Enter a pH reading from 0 to 14 and non-negative TDS");
+		} else if (semiMatch && request.method === "PATCH") {
+			if (
+				!semiMatch[2] ||
+				!["completed", "partial", "failed"].includes(input.status) ||
+				!Array.isArray(input.completed) ||
+				!Array.isArray(input.attempted)
+			)
+				throw new Error("Invalid semi-automatic dose result");
+		} else if (semiMatch) {
+			return send(response, 405, { error: "Method not allowed" });
+		}
+		if (!semiMatch) {
+			validateSystems(input.systems);
+			if (!Number.isSafeInteger(input.revision) || input.revision < 0)
+				throw new Error("Invalid revision");
+		}
 	} catch (error) {
 		return send(response, 400, { error: error.message });
 	}
 	const write = writes.then(async () => {
+		if (semiMatch && request.method === "POST") {
+			const [systemId] = semiMatch.slice(1);
+			const systemIndex = state.systems.findIndex(
+				(item) => item.id === systemId,
+			);
+			if (systemIndex < 0)
+				return send(response, 404, { error: "System not found" });
+			const system = state.systems[systemIndex];
+			if (!system.semiAutomatic)
+				return send(response, 409, {
+					error: "Save semi-automatic dosing configuration first",
+				});
+			const date = dateKey();
+			const usage = system.semiAutomatic.dailyUsage || {};
+			const decision = decideSemiAutomatic(
+				system.semiAutomatic,
+				input.measurements,
+				usage[date] || 0,
+			);
+			const blockedReason =
+				typeof input.blockedReason === "string"
+					? input.blockedReason.slice(0, 240)
+					: "";
+			const allowed = decision.allowed && !blockedReason;
+			const event = {
+				id: randomUUID(),
+				date,
+				timestamp: Date.now(),
+				type: "semi-automatic",
+				measurements: input.measurements,
+				allowed,
+				reason: blockedReason || decision.reason,
+				pumps: allowed ? decision.pumps : [],
+				activations: allowed ? decision.pumps.length : 0,
+				attempted: [],
+				completed: [],
+				status: allowed ? "running" : "declined",
+			};
+			const history = [...(system.semiAutomatic.history || []), event].slice(
+				-100,
+			);
+			const dailyUsage = allowed
+				? { ...usage, [date]: (usage[date] || 0) + event.activations }
+				: usage;
+			for (const key of Object.keys(dailyUsage)) {
+				if (key !== date) delete dailyUsage[key];
+			}
+			const next = {
+				...state,
+				revision: state.revision + 1,
+				systems: state.systems.map((item, index) =>
+					index === systemIndex
+						? {
+								...item,
+								semiAutomatic: {
+									...system.semiAutomatic,
+									dailyUsage,
+									history,
+								},
+							}
+						: item,
+				),
+			};
+			await writeState(next);
+			return send(response, 200, { ...event, revision: next.revision });
+		}
+		if (semiMatch && request.method === "PATCH") {
+			const [systemId, eventId] = semiMatch.slice(1);
+			const systemIndex = state.systems.findIndex(
+				(item) => item.id === systemId,
+			);
+			if (systemIndex < 0)
+				return send(response, 404, { error: "System not found" });
+			const system = state.systems[systemIndex];
+			const history = system.semiAutomatic?.history || [];
+			const eventIndex = history.findIndex((item) => item.id === eventId);
+			if (eventIndex < 0)
+				return send(response, 404, { error: "Dose log not found" });
+			const event = history[eventIndex];
+			if (event.status !== "running")
+				return send(response, 409, { error: "Dose log entry is already finalized" });
+			if (
+				input.attempted.some((pump) => !event.pumps.includes(pump)) ||
+				input.completed.some((pump) => !input.attempted.includes(pump)) ||
+				new Set(input.attempted).size !== input.attempted.length ||
+				new Set(input.completed).size !== input.completed.length ||
+				(input.status === "completed" &&
+					input.completed.length !== event.pumps.length)
+			)
+				return send(response, 400, { error: "Invalid completed pump list" });
+			const dailyUsage = { ...(system.semiAutomatic.dailyUsage || {}) };
+			dailyUsage[event.date] = Math.max(
+				0,
+				(dailyUsage[event.date] || 0) -
+					Math.max(0, event.activations - input.attempted.length),
+			);
+			const updatedEvent = {
+				...event,
+				status: input.status,
+				activations: input.attempted.length,
+				attempted: input.attempted,
+				completed: input.completed,
+				reason:
+					typeof input.reason === "string"
+						? input.reason.slice(0, 240)
+						: event.reason,
+				finishedAt: Date.now(),
+			};
+			const updatedHistory = [...history];
+			updatedHistory[eventIndex] = updatedEvent;
+			const next = {
+				...state,
+				revision: state.revision + 1,
+				systems: state.systems.map((item, index) =>
+					index === systemIndex
+						? {
+								...item,
+								semiAutomatic: {
+									...system.semiAutomatic,
+									dailyUsage,
+									history: updatedHistory,
+								},
+							}
+						: item,
+				),
+			};
+			await writeState(next);
+			return send(response, 200, { ...updatedEvent, revision: next.revision });
+		}
 		if (input.revision !== state.revision) {
 			return send(response, 409, {
 				error: "Systems changed in another session. Reload and try again.",
 			});
 		}
 		const next = { revision: state.revision + 1, systems: input.systems };
-		await mkdir(dirname(dataFile), { recursive: true });
-		const temporary = join(dirname(dataFile), `.systems-${process.pid}.tmp`);
-		await writeFile(temporary, JSON.stringify(next), { mode: 0o600 });
-		await rename(temporary, dataFile);
-		state = next;
+		await writeState(next);
 		send(response, 200, state);
 	});
 	writes = write.catch((error) => {
