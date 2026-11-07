@@ -79,8 +79,27 @@ test("systems persist, reject duplicate channels and protect concurrent edits", 
 	assert.deepEqual(race.map((response) => response.status).sort(), [200, 409]);
 	const saved = await (await fetch(url)).json();
 	assert.equal(saved.revision, 2);
+	const settings = {
+		phMin: 5.5,
+		phMax: 6.5,
+		tdsMin: 450,
+		tdsMax: 800,
+		maxDosesPerDay: 3,
+		mixingSeconds: 10,
+		doses: { solutionA: 5, solutionB: 6, phDown: 7 },
+	};
+	const invalidSettings = await put(url, 2, [
+		{ ...saved.systems[0], semiAutomatic: { ...settings, mixingSeconds: 31 } },
+	]);
+	assert.equal(invalidSettings.status, 400);
+	assert.equal(
+		(await put(url, 2, [{ ...saved.systems[0], semiAutomatic: settings }]))
+			.status,
+		200,
+	);
+	const withSettings = await (await fetch(url)).json();
 	process.kill("SIGTERM");
 	await once(process, "exit");
 	url = await start();
-	assert.deepEqual(await (await fetch(url)).json(), saved);
+	assert.deepEqual(await (await fetch(url)).json(), withSettings);
 });

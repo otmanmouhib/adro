@@ -39,6 +39,14 @@ telemetry is unavailable. Only online devices are offered for new assignments;
 saved assignments remain visible if a device goes offline. A channel may
 belong to only one component across all systems.
 
+The semi-automatic dosing section can save pH and TDS thresholds, pump
+volumes, a daily activation limit, and a 5–30 second mixing delay. It can
+preview which pumps the entered readings would select. This is only a
+preliminary check: the daily limit is not enforced and no pumps are started.
+Semi-automatic execution, dosing logs, and firmware communication are not
+implemented. An SSR's ON state indicates a commanded output, not measured
+circulation or flow.
+
 System configurations are stored on the hub in the `potman-systems-data`
 Docker volume and shared between browsers. Device display names still come
 from each browser's local storage; MAC addresses identify devices consistently.

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import DosingDetails from "@/components/DosingDetails";
+import SemiAutomatic from "@/components/SemiAutomatic";
 import SwitchDetails from "@/components/SwitchDetails";
 import { getSavedDeviceNames } from "@/lib/deviceNames";
 import {
@@ -557,6 +558,19 @@ export default function SystemsPage() {
 													);
 												})}
 											</div>
+											<SemiAutomatic
+												system={system}
+												saving={saving}
+												onSave={(semiAutomatic) =>
+													save(
+														state.systems.map((item) =>
+															item.id === system.id
+																? { ...item, semiAutomatic }
+																: item,
+														),
+													)
+												}
+											/>
 											<div className="mt-5 flex gap-2">
 												<button
 													type="button"

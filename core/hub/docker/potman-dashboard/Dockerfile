@@ -13,7 +13,7 @@ COPY nginx.conf /etc/nginx/conf.d/default.conf
 COPY docker-entrypoint.sh /docker-entrypoint.d/40-adro-config.sh
 RUN chmod +x /docker-entrypoint.d/40-adro-config.sh
 COPY --from=builder /app/dist /usr/share/nginx/html
-COPY server/systems.mjs server/start.mjs /opt/adro/
+COPY server/systems.mjs server/dose-decision.mjs server/start.mjs /opt/adro/
 ENV ADRO_SYSTEMS_FILE=/data/systems.json
 VOLUME /data
 EXPOSE 80

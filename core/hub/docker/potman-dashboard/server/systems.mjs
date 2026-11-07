@@ -1,6 +1,7 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { dirname, join } from "node:path";
+import { validateDoseConfig } from "./dose-decision.mjs";
 
 const dataFile = process.env.ADRO_SYSTEMS_FILE || "/data/systems.json";
 const port = Number(process.env.PORT || 3001);
@@ -33,6 +34,7 @@ function validateSystems(systems) {
 			throw new Error("Invalid system configuration");
 		}
 		ids.add(system.id);
+		if (system.semiAutomatic != null) validateDoseConfig(system.semiAutomatic);
 		for (const [role, assignment] of Object.entries(system.assignments)) {
 			const rule = Object.hasOwn(roles, role) ? roles[role] : null;
 			if (
