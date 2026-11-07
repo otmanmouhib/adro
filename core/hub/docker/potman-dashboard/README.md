@@ -31,23 +31,35 @@ with `docker compose up --build potman-dashboard` after preparing the hub
 configuration required by the Mosquitto service.
 
 The Systems page creates named standalone systems and maps their circulation
-pump, feed pump or valve, solution A and B, and pH-down pumps to claimed device
-channels.
+pump, feed pump or valve, solution A and B, pH-down and pH-up pumps to claimed
+device channels. Dosing stations have 4 channels (firmware 1.0.15+); a system
+can assign any channel to any dosing role.
 After saving an assignment, its channel's controls and settings appear on the
 system card. Controls are disabled while the device is offline or live
 telemetry is unavailable. Only online devices are offered for new assignments;
 saved assignments remain visible if a device goes offline. A channel may
 belong to only one component across all systems.
 
-Each standalone system stores its semi-automatic guardrails, dose volumes,
-daily pump-activation limit, and 5–30 second mixing delay with its assignments.
-The semi-automatic action accepts manual pH and TDS readings, enforces those
-guardrails and the system-local calendar-day limit, then doses assigned pumps
-sequentially with device confirmation. Results and declines are logged on that
-system. Circulation is checked using the assigned SSR's reported ON state; it
-does not measure water flow. Daily limits use the hub's local calendar date
-(the container defaults to `Africa/Casablanca`). Dosing stations must run
-firmware 1.0.14 or newer.
+Each standalone system stores its semi-automatic guardrails, per-pump dose
+volumes, daily pump-activation limit and 5–30 second mixing delay with its
+assignments. **Semi-auto dose** sits at the top of the system card: enter the
+measured pH and TDS (ppm) and the hub checks the guardrails, then runs the
+needed pumps one at a time with device confirmation. Every request, including
+declines and the reason, is logged on that system.
+
+- TDS below the minimum doses Solution A then B (both must be assigned).
+- pH above the maximum doses pH down; pH below the minimum doses pH up. If the
+  matching pump is not assigned the dose is declined (a low pH with no pH up
+  pump blocks everything); a pump that is not assigned is otherwise skipped
+  and reported.
+- TDS above the maximum never adds nutrients but does not block pH correction;
+  it is reported as a warning. Readings within range, a missing dose volume,
+  an exceeded daily limit or a failed circulation/device check decline the
+  dose with an explanation.
+- Circulation is checked using the assigned SSR's reported ON state; it does
+  not measure water flow. The daily limit counts pump activations on the hub's
+  local calendar date (the container defaults to `Africa/Casablanca`).
+- Dosing stations must run firmware 1.0.15 or newer (1.0.14 works for pumps 1-2).
 
 System configurations are stored on the hub in the `potman-systems-data`
 Docker volume and shared between browsers. Device display names still come

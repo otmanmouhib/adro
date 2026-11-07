@@ -15,6 +15,7 @@ import {
 import {
 	decideSemiAutomatic,
 	doseAvailability,
+	roleLabels,
 } from "../../server/dose-decision.mjs";
 
 const roles = [
@@ -25,9 +26,10 @@ const roles = [
 		count: 4,
 	},
 	{ key: "feedPump", label: "Feed pump / valve", type: "switch", count: 4 },
-	{ key: "solutionA", label: "Solution A", type: "dosing", count: 2 },
-	{ key: "solutionB", label: "Solution B", type: "dosing", count: 2 },
-	{ key: "phDown", label: "pH down", type: "dosing", count: 2 },
+	{ key: "solutionA", label: "Solution A", type: "dosing", count: 4 },
+	{ key: "solutionB", label: "Solution B", type: "dosing", count: 4 },
+	{ key: "phDown", label: "pH down", type: "dosing", count: 4 },
+	{ key: "phUp", label: "pH up", type: "dosing", count: 4 },
 ];
 
 function channelKey(assignment) {
@@ -529,22 +531,22 @@ export default function SystemsPage() {
 			for (const role of decision.pumps) {
 				const assignment = system.assignments[role];
 				if (!assignment) {
-					blockedReason = `Assign a pump for ${role} before requesting this dose.`;
+					blockedReason = `Assign a pump for ${roleLabels[role]} before requesting this dose.`;
 					break;
 				}
 				const device = getDevice(assignment);
 				if (!freshTelemetry(device) || device.type !== "dosing") {
-					blockedReason = `The ${role} dosing station is offline or its telemetry is stale.`;
+					blockedReason = `The ${roleLabels[role]} dosing station is offline or its telemetry is stale.`;
 					break;
 				}
 				if (!firmwareSupportsDoseRequests(device.fw)) {
-					blockedReason = `Update the ${role} dosing station to firmware 1.0.14 or newer.`;
+					blockedReason = `Update the ${roleLabels[role]} dosing station to firmware 1.0.14 or newer.`;
 					break;
 				}
 				const channels = device.telemetry.channels;
 				const pump = channels?.[assignment.channel - 1];
 				if (!pump || channels.some((channel) => channel.state)) {
-					blockedReason = `The ${role} pump is missing or another pump on its station is already running.`;
+					blockedReason = `The ${roleLabels[role]} pump is missing or another pump on its station is already running.`;
 					break;
 				}
 				const flow = Number(pump.flow_ml_s);
@@ -556,7 +558,7 @@ export default function SystemsPage() {
 					duration < 100 ||
 					duration > 600_000
 				) {
-					blockedReason = `The ${role} pump needs a valid saved flow rate and safe dose runtime.`;
+					blockedReason = `The ${roleLabels[role]} pump needs a valid saved flow rate and safe dose runtime.`;
 					break;
 				}
 			}

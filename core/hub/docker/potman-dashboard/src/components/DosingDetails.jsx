@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 
-const PUMP_COUNT = 2;
+const PUMP_COUNT = 4;
 
 function makeDraft(channels) {
   return Array.from({ length: PUMP_COUNT }, (_, index) => ({
@@ -34,7 +34,8 @@ export default function DosingDetails({
   doseStarting = false,
 }) {
   const channels = device.telemetry?.channels || [];
-  const hasTelemetry = channels.length === PUMP_COUNT;
+  // Stations on older 2-pump firmware only report the pumps they have.
+  const hasTelemetry = channels.length >= (selectedChannel || PUMP_COUNT);
   const [draft, setDraft] = useState(() => makeDraft(channels));
   const [dirtyPumps, setDirtyPumps] = useState({});
   const [pendingConfig, setPendingConfig] = useState({});
@@ -50,7 +51,7 @@ export default function DosingDetails({
     for (let index = 0; index < PUMP_COUNT; index++) {
       const pumpNumber = index + 1;
       const expected = pendingConfig[pumpNumber];
-      if (expected && matchesConfig(channels[index], expected)) {
+      if (expected && channels[index] && matchesConfig(channels[index], expected)) {
         setPendingConfig((current) => {
           if (current[pumpNumber] !== expected) return current;
           const next = { ...current };
@@ -206,7 +207,7 @@ export default function DosingDetails({
       >
         {!selectedChannel && <header className="mb-5 flex items-start justify-between gap-4 border-b border-zinc-200 pb-4 dark:border-zinc-800">
           <div>
-            <p className="text-xs font-medium uppercase text-zinc-500">Dosing station · 2 mapped pumps</p>
+            <p className="text-xs font-medium uppercase text-zinc-500">Dosing station · 4 mapped pumps</p>
             <h2 id="dosing-details-title" className="mt-1 text-xl font-semibold">
               {device.name || device.model || device.mac}
             </h2>

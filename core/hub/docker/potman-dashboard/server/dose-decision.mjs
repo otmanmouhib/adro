@@ -1,9 +1,10 @@
-const DOSE_ROLES = ["solutionA", "solutionB", "phDown"];
+const DOSE_ROLES = ["solutionA", "solutionB", "phDown", "phUp"];
 
 export const roleLabels = {
 	solutionA: "Solution A",
 	solutionB: "Solution B",
 	phDown: "pH down",
+	phUp: "pH up",
 };
 
 function inRange(value, min, max) {
@@ -15,12 +16,13 @@ function inRange(value, min, max) {
 	);
 }
 
-// Nutrients are always dosed as an A+B pair; pH down is independent.
+// Nutrients are always dosed as an A+B pair; pH down and pH up are independent.
 export function doseAvailability(system) {
 	const assignments = system?.assignments || {};
 	return {
 		nutrients: Boolean(assignments.solutionA && assignments.solutionB),
 		phDown: Boolean(assignments.phDown),
+		phUp: Boolean(assignments.phUp),
 	};
 }
 
@@ -56,7 +58,7 @@ export function decideSemiAutomatic(
 	config,
 	measurements,
 	dosesToday,
-	available = { nutrients: true, phDown: true },
+	available = { nutrients: true, phDown: true, phUp: true },
 ) {
 	validateDoseConfig(config);
 	if (
@@ -69,17 +71,19 @@ export function decideSemiAutomatic(
 		throw new Error("Invalid daily dose count");
 
 	const { ph, tds } = measurements;
-	if (ph < config.phMin)
+	if (ph < config.phMin && !available.phUp)
 		return decline(
-			`pH ${ph} is below the safe minimum of ${config.phMin}. No dose was given.`,
-		);
-	if (tds > config.tdsMax)
-		return decline(
-			`TDS ${tds} ppm is above the safe maximum of ${config.tdsMax} ppm. No dose was given.`,
+			`pH ${ph} is below the safe minimum of ${config.phMin} and no pH up pump is assigned to this system. No dose was given.`,
 		);
 
 	const pumps = [];
 	const notes = [];
+	// Too-concentrated solution never gets more nutrients, but pH can still be corrected.
+	const tooConcentrated = tds > config.tdsMax;
+	if (tooConcentrated)
+		notes.push(
+			`TDS ${tds} ppm is above the safe maximum of ${config.tdsMax} ppm, so no nutrients are dosed. Consider diluting the solution.`,
+		);
 	if (tds < config.tdsMin) {
 		if (available.nutrients) pumps.push("solutionA", "solutionB");
 		else
@@ -87,6 +91,8 @@ export function decideSemiAutomatic(
 				`TDS ${tds} ppm is below ${config.tdsMin} ppm, but Solution A and B are not both assigned to this system.`,
 			);
 	}
+	// pH correction runs after nutrients, which can shift pH.
+	if (ph < config.phMin) pumps.push("phUp");
 	if (ph > config.phMax) {
 		if (available.phDown) pumps.push("phDown");
 		else
@@ -95,12 +101,12 @@ export function decideSemiAutomatic(
 			);
 	}
 
+	// The reason already states these, so don't repeat them as separate notes.
 	if (!pumps.length)
 		return decline(
 			notes.length
 				? notes.join(" ")
 				: "Readings are within the configured ranges; no dose is needed.",
-			notes,
 		);
 
 	const missing = pumps.filter((role) => config.doses[role] === undefined);

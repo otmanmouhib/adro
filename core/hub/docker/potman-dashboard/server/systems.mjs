@@ -13,9 +13,10 @@ const port = Number(process.env.PORT || 3001);
 const roles = {
 	circulationPump: { type: "switch", maxChannel: 4 },
 	feedPump: { type: "switch", maxChannel: 4 },
-	solutionA: { type: "dosing", maxChannel: 2 },
-	solutionB: { type: "dosing", maxChannel: 2 },
-	phDown: { type: "dosing", maxChannel: 2 },
+	solutionA: { type: "dosing", maxChannel: 4 },
+	solutionB: { type: "dosing", maxChannel: 4 },
+	phDown: { type: "dosing", maxChannel: 4 },
+	phUp: { type: "dosing", maxChannel: 4 },
 };
 
 function validateSystems(systems) {

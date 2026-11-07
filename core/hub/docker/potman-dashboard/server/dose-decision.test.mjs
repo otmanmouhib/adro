@@ -9,7 +9,7 @@ const config = {
 	tdsMax: 800,
 	maxDosesPerDay: 3,
 	mixingSeconds: 10,
-	doses: { solutionA: 5, solutionB: 5, phDown: 5 },
+	doses: { solutionA: 5, solutionB: 5, phDown: 5, phUp: 5 },
 };
 
 test("readings select paired nutrients and pH down", () => {
@@ -33,12 +33,12 @@ test("readings select paired nutrients and pH down", () => {
 
 test("unsafe readings and insufficient remaining activations block the whole sequence", () => {
 	assert.equal(
-		decideSemiAutomatic(config, { ph: 5, tds: 400 }, 0).allowed,
+		decideSemiAutomatic(config, { ph: 6, tds: 900 }, 0).allowed,
 		false,
 	);
-	assert.equal(
-		decideSemiAutomatic(config, { ph: 7, tds: 900 }, 0).allowed,
-		false,
+	assert.match(
+		decideSemiAutomatic(config, { ph: 6, tds: 900 }, 0).reason,
+		/TDS 900 ppm is above the safe maximum of 800 ppm/,
 	);
 	assert.equal(
 		decideSemiAutomatic(config, { ph: 7, tds: 400 }, 1).allowed,
@@ -52,8 +52,8 @@ test("unsafe readings and insufficient remaining activations block the whole seq
 });
 
 test("A+B-only and pH-down-only systems can each dose on their own", () => {
-	const nutrientsOnly = { nutrients: true, phDown: false };
-	const phOnly = { nutrients: false, phDown: true };
+	const nutrientsOnly = { nutrients: true, phDown: false, phUp: false };
+	const phOnly = { nutrients: false, phDown: true, phUp: false };
 	const low = { ph: 6, tds: 400 };
 	const high = { ph: 7, tds: 600 };
 
@@ -73,7 +73,7 @@ test("A+B-only and pH-down-only systems can each dose on their own", () => {
 });
 
 test("declines explain missing pumps, missing volumes and the daily limit", () => {
-	const none = { nutrients: false, phDown: false };
+	const none = { nutrients: false, phDown: false, phUp: false };
 	const declined = decideSemiAutomatic(config, { ph: 7, tds: 400 }, 0, none);
 	assert.equal(declined.allowed, false);
 	assert.match(declined.reason, /Solution A and B are not both assigned/);
@@ -100,4 +100,45 @@ test("only the pumps a system uses need a dose volume", () => {
 	assert.throws(() =>
 		validateDoseConfig({ ...config, doses: { phDown: 5, solutionA: 80 } }),
 	);
+});
+
+test("low pH doses pH up after nutrients, and declines when no pH up pump exists", () => {
+	assert.deepEqual(decideSemiAutomatic(config, { ph: 5, tds: 600 }, 0).pumps, [
+		"phUp",
+	]);
+	assert.deepEqual(decideSemiAutomatic(config, { ph: 5, tds: 400 }, 0).pumps, [
+		"solutionA",
+		"solutionB",
+		"phUp",
+	]);
+	const noPhUp = { nutrients: true, phDown: true, phUp: false };
+	const declined = decideSemiAutomatic(config, { ph: 5, tds: 400 }, 0, noPhUp);
+	assert.equal(declined.allowed, false);
+	assert.match(
+		declined.reason,
+		/below the safe minimum of 5\.5 and no pH up pump/,
+	);
+	// pH up needs its own activation budget and dose volume.
+	assert.match(
+		decideSemiAutomatic(config, { ph: 5, tds: 400 }, 1).reason,
+		/Daily limit reached: 1 of 3.*needs 3/,
+	);
+	assert.match(
+		decideSemiAutomatic(
+			{ ...config, doses: { solutionA: 5, solutionB: 5 } },
+			{ ph: 5, tds: 600 },
+			0,
+		).reason,
+		/dose volume for pH up/,
+	);
+});
+
+test("TDS above the maximum blocks only nutrients, not pH correction", () => {
+	const lowPh = decideSemiAutomatic(config, { ph: 4, tds: 900 }, 0);
+	assert.equal(lowPh.allowed, true);
+	assert.deepEqual(lowPh.pumps, ["phUp"]);
+	assert.match(lowPh.notes[0], /no nutrients are dosed/);
+	assert.deepEqual(decideSemiAutomatic(config, { ph: 7, tds: 900 }, 0).pumps, [
+		"phDown",
+	]);
 });

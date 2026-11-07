@@ -9,16 +9,18 @@
 #include <ESPmDNS.h>
 #include <esp_timer.h>
 
-const char* currentFirmwareVersion = "1.0.14";
+const char* currentFirmwareVersion = "1.0.15";
 const char* otaManifestBase = "http://adro.local:8000";
 const char* mqttHost = "adro.local";
 const int mqttPort = 1883;
 const char* ssid = "Tenda_2AAA80";
 const char* wifiPassword = "";
 
-const int NUM_PUMPS = 2;
-const int PUMP_IN1[NUM_PUMPS] = {26, 14};
-const int PUMP_IN2[NUM_PUMPS] = {27, 25};
+// Pumps 1-2 use the first L298N, pumps 3-4 the second. Keep each driver's
+// ENA/ENB jumpered or tied high so IN1/IN2 control the motors.
+const int NUM_PUMPS = 4;
+const int PUMP_IN1[NUM_PUMPS] = {26, 14, 32, 16};
+const int PUMP_IN2[NUM_PUMPS] = {27, 25, 33, 17};
 const uint32_t MIN_DOSE_MS = 100;
 const uint32_t MAX_DOSE_MS = 600000;
 const float MIN_DOSE_ML = 5.0f;
@@ -50,16 +52,16 @@ const int DAYLIGHT_OFFSET_SEC = 0;
 #define LEGACY_LAST_DOSE_A 20
 #define LEGACY_LAST_DOSE_B 24
 
-float pumpDoseMl[NUM_PUMPS] = {5.0f, 5.0f};
-float pumpFlowMlPerSecond[NUM_PUMPS] = {0.0f, 0.0f};
-bool pumpRunning[NUM_PUMPS] = {false, false};
-uint32_t pumpLastDose[NUM_PUMPS] = {0, 0};
-uint32_t activeDoseMs[NUM_PUMPS] = {0, 0};
-unsigned long pumpStartedAt[NUM_PUMPS] = {0, 0};
+float pumpDoseMl[NUM_PUMPS] = {5.0f, 5.0f, 5.0f, 5.0f};
+float pumpFlowMlPerSecond[NUM_PUMPS] = {0.0f, 0.0f, 0.0f, 0.0f};
+bool pumpRunning[NUM_PUMPS] = {false, false, false, false};
+uint32_t pumpLastDose[NUM_PUMPS] = {0, 0, 0, 0};
+uint32_t activeDoseMs[NUM_PUMPS] = {0, 0, 0, 0};
+unsigned long pumpStartedAt[NUM_PUMPS] = {0, 0, 0, 0};
 String activeDoseRequestId[NUM_PUMPS];
 String lastDoseRequestId[NUM_PUMPS];
-volatile bool pumpTimerExpired[NUM_PUMPS] = {false, false};
-esp_timer_handle_t pumpStopTimers[NUM_PUMPS] = {nullptr, nullptr};
+volatile bool pumpTimerExpired[NUM_PUMPS] = {false, false, false, false};
+esp_timer_handle_t pumpStopTimers[NUM_PUMPS] = {nullptr, nullptr, nullptr, nullptr};
 portMUX_TYPE doseTimerMux = portMUX_INITIALIZER_UNLOCKED;
 String lastDoseCommandRequestId;
 String lastDoseCommandError;
@@ -238,13 +240,14 @@ void loadSettings() {
       EEPROM.get(base + 12, pumpLastDose[pump]);
     }
   } else {
-    uint32_t legacyDoseMs[NUM_PUMPS] = {5000, 5000};
+    uint32_t legacyDoseMs[NUM_PUMPS] = {5000, 5000, 5000, 5000};
     EEPROM.get(LEGACY_DOSE_A_TIME, legacyDoseMs[0]);
     EEPROM.get(LEGACY_DOSE_B_TIME, legacyDoseMs[1]);
     EEPROM.get(LEGACY_LAST_DOSE_A, pumpLastDose[0]);
     EEPROM.get(LEGACY_LAST_DOSE_B, pumpLastDose[1]);
     claimed = false;
     for (int pump = 0; pump < NUM_PUMPS; pump++) {
+      pumpLastDose[pump] = pump < 2 ? pumpLastDose[pump] : 0;
       pumpDoseMl[pump] = constrain(legacyDoseMs[pump] / 1000.0f,
                                    MIN_DOSE_ML, MAX_DOSE_ML);
       pumpFlowMlPerSecond[pump] = 0.0f;
@@ -255,6 +258,8 @@ void loadSettings() {
   for (int pump = 0; pump < NUM_PUMPS; pump++) {
     if (!isfinite(pumpDoseMl[pump]) || pumpDoseMl[pump] < MIN_DOSE_ML ||
         pumpDoseMl[pump] > MAX_DOSE_ML) pumpDoseMl[pump] = 5.0f;
+    // Pumps 3-4 read erased EEPROM (0xFF) on stations upgraded from 2 pumps.
+    if (pumpLastDose[pump] == 0xFFFFFFFFUL) pumpLastDose[pump] = 0;
     if (!isfinite(pumpFlowMlPerSecond[pump]) ||
         pumpFlowMlPerSecond[pump] < 0.0f ||
         pumpFlowMlPerSecond[pump] > MAX_FLOW_ML_PER_SEC) {
@@ -364,7 +369,7 @@ void computeTopics() {
 }
 
 String buildEnvelope(JsonDocument& data) {
-  DynamicJsonDocument envelope(2560);
+  DynamicJsonDocument envelope(4096);
   envelope["ts"] = nowSeconds();
   envelope["seq"] = sequenceNumber++;
   envelope["v"] = currentFirmwareVersion;
@@ -416,7 +421,7 @@ void publishHello() {
   document["fw"] = currentFirmwareVersion;
   document["ip"] = WiFi.localIP().toString();
   document["model"] = "dosing-station-v0";
-  document["capabilities"] = "2-dose-pumps";
+  document["capabilities"] = "4-dose-pumps";
   String payload;
   serializeJson(document, payload);
   client.publish(topicHello.c_str(), payload.c_str(), true);
@@ -488,7 +493,7 @@ void handleUnclaim(JsonObject document) {
 
 void publishTelemetry() {
   if (!claimed || !client.connected()) return;
-  DynamicJsonDocument data(1536);
+  DynamicJsonDocument data(2048);
   data["wifi"] = WiFi.status() == WL_CONNECTED;
   data["mqtt"] = client.connected();
   data["rssi"] = WiFi.RSSI();
@@ -799,8 +804,8 @@ void setup() {
   client.setCallback(mqttCallback);
   client.setKeepAlive(60);
   client.setSocketTimeout(30);
-  if (!client.setBufferSize(1536)) {
-    Serial.println("[MQTT] failed to allocate 1536-byte packet buffer");
+  if (!client.setBufferSize(2304)) {
+    Serial.println("[MQTT] failed to allocate 2304-byte packet buffer");
   }
   reconnect();
   startupTime = millis();

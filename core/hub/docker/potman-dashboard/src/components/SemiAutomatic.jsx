@@ -2,10 +2,10 @@ import { useState } from "react";
 import { roleLabels, validateDoseConfig } from "../../server/dose-decision.mjs";
 
 const thresholdFields = [
-	["phMin", "Minimum pH (below this, never dose)", "0", "14", "0.01"],
+	["phMin", "Minimum pH (below this, dose pH up)", "0", "14", "0.01"],
 	["phMax", "Maximum pH (above this, dose pH down)", "0", "14", "0.01"],
 	["tdsMin", "Minimum TDS ppm (below this, dose A + B)", "0", undefined, "1"],
-	["tdsMax", "Maximum TDS ppm (above this, never dose)", "0", undefined, "1"],
+	["tdsMax", "Maximum TDS ppm (above this, no nutrients)", "0", undefined, "1"],
 	["maxDosesPerDay", "Maximum pump activations per day", "1", undefined, "1"],
 	["mixingSeconds", "Mixing delay between pumps (5–30 s)", "5", "30", "1"],
 ];
@@ -14,6 +14,7 @@ const doseFields = [
 	["solutionA", "nutrients", "Solution A per dose (mL)"],
 	["solutionB", "nutrients", "Solution B per dose (mL)"],
 	["phDown", "phDown", "pH down per dose (mL)"],
+	["phUp", "phUp", "pH up per dose (mL)"],
 ];
 
 const inputClass =
@@ -63,7 +64,7 @@ export default function SemiAutomatic({
 	const [error, setError] = useState(null);
 	const [notice, setNotice] = useState(null);
 	const busy = saving || running;
-	const canDose = available.nutrients || available.phDown;
+	const canDose = available.nutrients || available.phDown || available.phUp;
 	const usage = Object.entries(config?.dailyUsage || {})[0];
 
 	function toggleConfigure() {
@@ -141,7 +142,8 @@ export default function SemiAutomatic({
 					<h3 className="font-semibold">Semi-automatic dosing</h3>
 					<p className="text-xs text-zinc-600 dark:text-zinc-400">
 						Nutrients A + B: {available.nutrients ? "assigned" : "not assigned"}{" "}
-						· pH down: {available.phDown ? "assigned" : "not assigned"}
+						· pH down: {available.phDown ? "assigned" : "not assigned"} · pH up:{" "}
+						{available.phUp ? "assigned" : "not assigned"}
 					</p>
 				</div>
 				<div className="flex flex-wrap gap-2">
@@ -176,8 +178,8 @@ export default function SemiAutomatic({
 			)}
 			{!canDose && (
 				<p className="mt-3 text-sm text-amber-700 dark:text-amber-300">
-					Assign Solution A and B, and/or a pH down pump, with Configure below
-					before a dose can run.
+					Assign Solution A and B, and/or a pH down or pH up pump, with
+					Configure below before a dose can run.
 				</p>
 			)}
 			{notice && (
@@ -325,8 +327,8 @@ export default function SemiAutomatic({
 						<p>Dose declined — {result.reason}</p>
 					)}
 					{result.notes?.map((note) => (
-						<p key={note} className="mt-1 text-zinc-600 dark:text-zinc-400">
-							Note: {note}
+						<p key={note} className="mt-1 text-amber-700 dark:text-amber-300">
+							Not dosed: {note}
 						</p>
 					))}
 				</div>
@@ -361,6 +363,14 @@ export default function SemiAutomatic({
 											{event.pumps.map((role) => roleLabels[role]).join(", ")}
 										</p>
 									)}
+									{event.notes?.map((note) => (
+										<p
+											key={note}
+											className="text-amber-700 dark:text-amber-300"
+										>
+											Not dosed: {note}
+										</p>
+									))}
 								</li>
 							))}
 					</ul>
