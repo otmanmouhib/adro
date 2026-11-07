@@ -2,7 +2,11 @@ import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { dirname, join } from "node:path";
-import { decideSemiAutomatic, validateDoseConfig } from "./dose-decision.mjs";
+import {
+	decideSemiAutomatic,
+	doseAvailability,
+	validateDoseConfig,
+} from "./dose-decision.mjs";
 
 const dataFile = process.env.ADRO_SYSTEMS_FILE || "/data/systems.json";
 const port = Number(process.env.PORT || 3001);
@@ -186,6 +190,7 @@ const server = createServer(async (request, response) => {
 				system.semiAutomatic,
 				input.measurements,
 				usage[date] || 0,
+				doseAvailability(system),
 			);
 			const blockedReason =
 				typeof input.blockedReason === "string"
@@ -200,6 +205,7 @@ const server = createServer(async (request, response) => {
 				measurements: input.measurements,
 				allowed,
 				reason: blockedReason || decision.reason,
+				notes: decision.notes,
 				pumps: allowed ? decision.pumps : [],
 				activations: allowed ? decision.pumps.length : 0,
 				attempted: [],

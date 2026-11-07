@@ -12,7 +12,10 @@ import {
 	STATUS_TOPIC,
 	TELEMETRY_TOPIC,
 } from "@/lib/mqtt";
-import { decideSemiAutomatic } from "../../server/dose-decision.mjs";
+import {
+	decideSemiAutomatic,
+	doseAvailability,
+} from "../../server/dose-decision.mjs";
 
 const roles = [
 	{
@@ -269,7 +272,7 @@ function useAvailableDevices() {
 
 	async function doseAndConfirm(assignment, doseMl, circulation) {
 		const key = deviceKey(assignment);
-		if (automationLocksRef.current.has(key))
+		if (automationLocksRef.current.has(key) || startingRef.current.has(key))
 			throw new Error("Another dose is already using this dosing station");
 		automationLocksRef.current.add(key);
 		try {
@@ -277,6 +280,18 @@ function useAvailableDevices() {
 		} finally {
 			automationLocksRef.current.delete(key);
 		}
+	}
+
+	async function saveDeviceConfig(assignment, config) {
+		if (automationLocksRef.current.has(deviceKey(assignment)))
+			throw new Error(
+				"Pump settings cannot change during a semi-automatic dose",
+			);
+		await publishMqtt(
+			clientRef.current,
+			configTopic(assignment.type, assignment.mac),
+			config,
+		);
 	}
 
 	async function doseAndConfirmLocked(assignment, doseMl, circulation) {
@@ -310,11 +325,16 @@ function useAvailableDevices() {
 				? current
 				: undefined;
 		});
-		await publishMqtt(
-			clientRef.current,
-			configTopic(assignment.type, assignment.mac),
-			{ channel: channelNumber, dose_ml: doseMl, flow_ml_s: flow },
-		);
+		try {
+			await publishMqtt(
+				clientRef.current,
+				configTopic(assignment.type, assignment.mac),
+				{ channel: channelNumber, dose_ml: doseMl, flow_ml_s: flow },
+			);
+		} catch (error) {
+			configConfirmed.catch(() => {});
+			throw error;
+		}
 		await configConfirmed;
 
 		const requestId = crypto.randomUUID();
@@ -325,11 +345,27 @@ function useAvailableDevices() {
 				? { ok: true }
 				: { ok: false, error: ack.error || "Dosing station rejected the dose" };
 		});
-		await publishMqtt(
-			clientRef.current,
-			commandTopic(assignment.type, assignment.mac),
-			{ action: "dose_now", channel: channelNumber, request_id: requestId },
-		);
+		try {
+			await publishMqtt(
+				clientRef.current,
+				commandTopic(assignment.type, assignment.mac),
+				{ action: "dose_now", channel: channelNumber, request_id: requestId },
+			);
+		} catch (error) {
+			acknowledgment.catch(() => {});
+			try {
+				await publishMqtt(
+					clientRef.current,
+					commandTopic(assignment.type, assignment.mac),
+					{ action: "stop_pump", channel: channelNumber },
+				);
+			} catch (stopError) {
+				throw new Error(
+					`${error.message}; stop command also failed: ${stopError.message}`,
+				);
+			}
+			throw error;
+		}
 		let monitoring = true;
 		const watchCirculation = async () => {
 			while (monitoring) {
@@ -382,6 +418,7 @@ function useAvailableDevices() {
 		sendCommand,
 		getDevice,
 		doseAndConfirm,
+		saveDeviceConfig,
 	};
 }
 
@@ -419,11 +456,11 @@ export default function SystemsPage() {
 		devices,
 		connected,
 		error: deviceError,
-		clientRef,
 		startingDoses,
 		sendCommand,
 		getDevice,
 		doseAndConfirm,
+		saveDeviceConfig,
 	} = useAvailableDevices();
 
 	async function load() {
@@ -461,7 +498,12 @@ export default function SystemsPage() {
 	}
 
 	async function runSemiAutomatic(system, measurements) {
-		const decision = decideSemiAutomatic(system.semiAutomatic, measurements, 0);
+		const decision = decideSemiAutomatic(
+			system.semiAutomatic,
+			measurements,
+			0,
+			doseAvailability(system),
+		);
 		let blockedReason = "";
 		const circulation = system.assignments.circulationPump;
 		if (decision.allowed) {
@@ -527,7 +569,12 @@ export default function SystemsPage() {
 		});
 		await load();
 		if (!event.allowed)
-			return { allowed: false, reason: event.reason, status: event.status };
+			return {
+				allowed: false,
+				reason: event.reason,
+				status: event.status,
+				notes: event.notes,
+			};
 
 		const completed = [];
 		const attempted = [];
@@ -567,7 +614,14 @@ export default function SystemsPage() {
 		} finally {
 			await load();
 		}
-		return { allowed: true, status, completed, pumps: event.pumps, reason };
+		return {
+			allowed: true,
+			status,
+			completed,
+			pumps: event.pumps,
+			reason,
+			notes: event.notes,
+		};
 	}
 
 	async function createSystem(event) {
@@ -815,6 +869,29 @@ export default function SystemsPage() {
 											<p className="mb-4 text-sm text-zinc-500">
 												Standalone system
 											</p>
+											<SemiAutomatic
+												available={doseAvailability(system)}
+												system={system}
+												saving={saving}
+												onSave={(semiAutomatic) =>
+													save(
+														state.systems.map((item) =>
+															item.id === system.id
+																? {
+																		...item,
+																		semiAutomatic: {
+																			...item.semiAutomatic,
+																			...semiAutomatic,
+																		},
+																	}
+																: item,
+														),
+													)
+												}
+												onRun={(measurements) =>
+													runSemiAutomatic(system, measurements)
+												}
+											/>
 											<div className="grid gap-4 sm:grid-cols-2">
 												{roles.map((role) => {
 													const assignment = system.assignments[role.key];
@@ -860,14 +937,7 @@ export default function SystemsPage() {
 																		sendCommand(assignment, command)
 																	}
 																	onSaveConfig={(config) =>
-																		publishMqtt(
-																			clientRef.current,
-																			configTopic(
-																				assignment.type,
-																				assignment.mac,
-																			),
-																			config,
-																		)
+																		saveDeviceConfig(assignment, config)
 																	}
 																/>
 															)}
@@ -875,28 +945,6 @@ export default function SystemsPage() {
 													);
 												})}
 											</div>
-											<SemiAutomatic
-												system={system}
-												saving={saving}
-												onSave={(semiAutomatic) =>
-													save(
-														state.systems.map((item) =>
-															item.id === system.id
-																? {
-																		...item,
-																		semiAutomatic: {
-																			...item.semiAutomatic,
-																			...semiAutomatic,
-																		},
-																	}
-																: item,
-														),
-													)
-												}
-												onRun={(measurements) =>
-													runSemiAutomatic(system, measurements)
-												}
-											/>
 											<div className="mt-5 flex gap-2">
 												<button
 													type="button"

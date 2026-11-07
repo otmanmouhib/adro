@@ -53,6 +53,7 @@ test("systems persist, reject duplicate channels and protect concurrent edits", 
 		assignments: {
 			circulationPump: { type: "switch", mac: "AA:BB:CC:DD:EE:FF", channel: 1 },
 			solutionA: { type: "dosing", mac: "11:22:33:44:55:66", channel: 1 },
+			solutionB: { type: "dosing", mac: "11:22:33:44:55:66", channel: 2 },
 			phDown: { type: "dosing", mac: "11:22:33:44:55:77", channel: 1 },
 		},
 	};
@@ -144,7 +145,7 @@ test("systems persist, reject duplicate channels and protect concurrent edits", 
 	});
 	const limitedEvent = await limitedDose.json();
 	assert.equal(limitedEvent.allowed, false);
-	assert.match(limitedEvent.reason, /daily pump activation limit/i);
+	assert.match(limitedEvent.reason, /daily limit reached/i);
 	const withDoseLog = await (await fetch(url)).json();
 	assert.equal(withDoseLog.systems[0].semiAutomatic.history.length, 3);
 	assert.equal(

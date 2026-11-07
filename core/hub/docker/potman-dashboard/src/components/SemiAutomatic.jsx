@@ -1,76 +1,117 @@
 import { useState } from "react";
-import { validateDoseConfig } from "../../server/dose-decision.mjs";
+import { roleLabels, validateDoseConfig } from "../../server/dose-decision.mjs";
 
-const fields = [
-	["phMin", "Minimum pH", "0", "14", "0.01"],
-	["phMax", "Maximum pH", "0", "14", "0.01"],
-	["tdsMin", "Minimum TDS (ppm)", "0", undefined, "1"],
-	["tdsMax", "Maximum TDS (ppm)", "0", undefined, "1"],
+const thresholdFields = [
+	["phMin", "Minimum pH (below this, never dose)", "0", "14", "0.01"],
+	["phMax", "Maximum pH (above this, dose pH down)", "0", "14", "0.01"],
+	["tdsMin", "Minimum TDS ppm (below this, dose A + B)", "0", undefined, "1"],
+	["tdsMax", "Maximum TDS ppm (above this, never dose)", "0", undefined, "1"],
 	["maxDosesPerDay", "Maximum pump activations per day", "1", undefined, "1"],
-	["mixingSeconds", "Mixing delay between pumps (seconds)", "5", "30", "1"],
-	["solutionA", "Solution A per activation (mL)", "5", "50", "0.1"],
-	["solutionB", "Solution B per activation (mL)", "5", "50", "0.1"],
-	["phDown", "pH down per activation (mL)", "5", "50", "0.1"],
+	["mixingSeconds", "Mixing delay between pumps (5–30 s)", "5", "30", "1"],
 ];
 
+const doseFields = [
+	["solutionA", "nutrients", "Solution A per dose (mL)"],
+	["solutionB", "nutrients", "Solution B per dose (mL)"],
+	["phDown", "phDown", "pH down per dose (mL)"],
+];
+
+const inputClass =
+	"min-w-0 rounded-md border border-zinc-300 bg-transparent px-3 py-2 dark:border-zinc-700";
+
 function configToDraft(config) {
-	return Object.fromEntries(
-		fields.map(([key]) => [
-			key,
-			String(config?.doses?.[key] ?? config?.[key] ?? ""),
-		]),
-	);
+	return {
+		...Object.fromEntries(
+			thresholdFields.map(([key]) => [key, String(config?.[key] ?? "")]),
+		),
+		...Object.fromEntries(
+			doseFields.map(([key]) => [key, String(config?.doses?.[key] ?? "")]),
+		),
+	};
 }
 
 function parseNumber(value) {
 	return value.trim() === "" ? Number.NaN : Number(value);
 }
 
-function statusLabel(event) {
-	if (!event.allowed) return `Declined: ${event.reason}`;
-	const completed = event.completed?.length
-		? ` · completed ${event.completed.join(", ")}`
-		: "";
-	return `${event.status}${completed}${event.reason ? ` · ${event.reason}` : ""}`;
+function describeEvent(event) {
+	if (!event.allowed) return `Declined — ${event.reason}`;
+	const done = event.completed?.map((role) => roleLabels[role]).join(", ");
+	const label = {
+		completed: "Completed",
+		partial: "Partial",
+		failed: "Failed",
+	}[event.status];
+	return `${label || "Running"}${done ? ` (${done})` : ""}${event.reason ? ` — ${event.reason}` : ""}`;
 }
 
-export default function SemiAutomatic({ system, saving, onSave, onRun }) {
-	const [configureOpen, setConfigureOpen] = useState(!system.semiAutomatic);
+export default function SemiAutomatic({
+	system,
+	available,
+	saving,
+	onSave,
+	onRun,
+}) {
+	const config = system.semiAutomatic;
+	const [configureOpen, setConfigureOpen] = useState(false);
 	const [doseOpen, setDoseOpen] = useState(false);
-	const [draft, setDraft] = useState(() => configToDraft(system.semiAutomatic));
+	const [draft, setDraft] = useState(() => configToDraft(config));
 	const [ph, setPh] = useState("");
 	const [tds, setTds] = useState("");
 	const [running, setRunning] = useState(false);
 	const [result, setResult] = useState(null);
 	const [error, setError] = useState(null);
-	const config = system.semiAutomatic;
+	const [notice, setNotice] = useState(null);
 	const busy = saving || running;
+	const canDose = available.nutrients || available.phDown;
+	const usage = Object.entries(config?.dailyUsage || {})[0];
+
+	function toggleConfigure() {
+		setNotice(null);
+		setError(null);
+		if (!configureOpen) setDraft(configToDraft(config));
+		setConfigureOpen(!configureOpen);
+	}
+
+	function startDose() {
+		setResult(null);
+		setError(null);
+		if (!config) {
+			setNotice(
+				"Save the safeguards once first. After that, Semi-auto dose asks for the pH and TDS readings each time.",
+			);
+			setConfigureOpen(true);
+			setDoseOpen(false);
+			return;
+		}
+		setNotice(null);
+		setDoseOpen(!doseOpen);
+	}
 
 	async function saveConfig(event) {
 		event.preventDefault();
-		const nextConfig = {
-			phMin: parseNumber(draft.phMin),
-			phMax: parseNumber(draft.phMax),
-			tdsMin: parseNumber(draft.tdsMin),
-			tdsMax: parseNumber(draft.tdsMax),
-			maxDosesPerDay: parseNumber(draft.maxDosesPerDay),
-			mixingSeconds: parseNumber(draft.mixingSeconds),
-			doses: {
-				solutionA: parseNumber(draft.solutionA),
-				solutionB: parseNumber(draft.solutionB),
-				phDown: parseNumber(draft.phDown),
-			},
+		const doses = { ...config?.doses };
+		for (const [key, group] of doseFields) {
+			if (available[group]) doses[key] = parseNumber(draft[key]);
+		}
+		const next = {
+			...Object.fromEntries(
+				thresholdFields.map(([key]) => [key, parseNumber(draft[key])]),
+			),
+			doses,
 		};
 		try {
-			validateDoseConfig(nextConfig);
-		} catch (validationError) {
-			setError(`${validationError.message}. Check all fields and ranges.`);
+			validateDoseConfig(next);
+		} catch {
+			setError(
+				"Check the values: pH 0–14 (min below max), TDS min below max, daily limit of at least 1, mixing 5–30 s, and dose volumes 5–50 mL.",
+			);
 			return;
 		}
 		setError(null);
-		if (await onSave(nextConfig)) {
-			setDraft(configToDraft(nextConfig));
+		if (await onSave(next)) {
 			setConfigureOpen(false);
+			setNotice("Safeguards saved. Use Semi-auto dose to enter readings.");
 		}
 	}
 
@@ -78,13 +119,10 @@ export default function SemiAutomatic({ system, saving, onSave, onRun }) {
 		event.preventDefault();
 		setResult(null);
 		setError(null);
+		setNotice(null);
 		setRunning(true);
 		try {
-			const outcome = await onRun({
-				ph: parseNumber(ph),
-				tds: parseNumber(tds),
-			});
-			setResult(outcome);
+			setResult(await onRun({ ph: parseNumber(ph), tds: parseNumber(tds) }));
 			setDoseOpen(false);
 		} catch (runError) {
 			setError(runError.message || "Semi-automatic dose request failed");
@@ -94,46 +132,65 @@ export default function SemiAutomatic({ system, saving, onSave, onRun }) {
 	}
 
 	return (
-		<section className="mt-5 border-t border-zinc-200 pt-5 dark:border-zinc-800">
-			<header className="mb-4 flex flex-wrap items-center justify-between gap-3">
-				<h3 className="text-lg font-semibold">Semi-automatic dosing</h3>
+		<section
+			aria-label={`Semi-automatic dosing for ${system.name}`}
+			className="mb-5 rounded-lg border border-emerald-700/40 bg-emerald-50/40 p-4 dark:bg-emerald-950/20"
+		>
+			<header className="flex flex-wrap items-center justify-between gap-3">
+				<div>
+					<h3 className="font-semibold">Semi-automatic dosing</h3>
+					<p className="text-xs text-zinc-600 dark:text-zinc-400">
+						Nutrients A + B: {available.nutrients ? "assigned" : "not assigned"}{" "}
+						· pH down: {available.phDown ? "assigned" : "not assigned"}
+					</p>
+				</div>
 				<div className="flex flex-wrap gap-2">
 					<button
 						type="button"
-						onClick={() => setConfigureOpen(!configureOpen)}
-						aria-expanded={configureOpen}
-						className="rounded-md border border-zinc-300 px-3 py-2 text-sm dark:border-zinc-700"
+						onClick={startDose}
+						aria-expanded={doseOpen}
+						disabled={busy}
+						className="min-h-10 rounded-md bg-emerald-700 px-4 text-sm font-semibold text-white disabled:opacity-40"
 					>
-						{config ? "Configure safeguards" : "Set up safeguards"}
+						Semi-auto dose
 					</button>
 					<button
 						type="button"
-						onClick={() => {
-							setDoseOpen(!doseOpen);
-							setResult(null);
-						}}
-						aria-expanded={doseOpen}
-						disabled={!config || busy}
-						className="rounded-md bg-emerald-700 px-3 py-2 text-sm font-semibold text-white disabled:opacity-40"
+						onClick={toggleConfigure}
+						aria-expanded={configureOpen}
+						disabled={busy}
+						className="min-h-10 rounded-md border border-zinc-300 px-3 text-sm disabled:opacity-40 dark:border-zinc-700"
 					>
-						Semi-auto dose
+						{config ? "Safeguards" : "Set up safeguards"}
 					</button>
 				</div>
 			</header>
 
-			<p className="mb-4 border-l-2 border-amber-500 pl-3 text-sm">
-				Circulation is checked using the assigned SSR's reported ON state; it
-				does not measure water flow. Dosing pumps must report firmware 1.0.14 or
-				newer and confirm each dose.
-			</p>
+			{config && (
+				<p className="mt-2 text-xs text-zinc-600 dark:text-zinc-400">
+					pH {config.phMin}–{config.phMax} · TDS {config.tdsMin}–{config.tdsMax}{" "}
+					ppm · max {config.maxDosesPerDay} pump activations/day
+					{usage ? ` (${usage[1]} used on ${usage[0]})` : ""} ·{" "}
+					{config.mixingSeconds} s mixing
+				</p>
+			)}
+			{!canDose && (
+				<p className="mt-3 text-sm text-amber-700 dark:text-amber-300">
+					Assign Solution A and B, and/or a pH down pump, with Configure below
+					before a dose can run.
+				</p>
+			)}
+			{notice && (
+				<p role="status" className="mt-3 text-sm">
+					{notice}
+				</p>
+			)}
 
 			{configureOpen && (
-				<form onSubmit={saveConfig} className="mb-5 grid gap-3">
-					<h4 className="font-semibold">
-						One-time guardrails and dose settings
-					</h4>
+				<form onSubmit={saveConfig} className="mt-4 grid gap-3">
+					<h4 className="font-semibold">Guardrails and dose volumes</h4>
 					<div className="grid gap-3 sm:grid-cols-2">
-						{fields.map(([key, label, min, max, step]) => (
+						{thresholdFields.map(([key, label, min, max, step]) => (
 							<label key={key} className="grid gap-1 text-sm">
 								{label}
 								<input
@@ -147,24 +204,54 @@ export default function SemiAutomatic({ system, saving, onSave, onRun }) {
 									onInput={(event) =>
 										setDraft({ ...draft, [key]: event.currentTarget.value })
 									}
-									className="min-w-0 rounded-md border border-zinc-300 bg-transparent px-3 py-2 dark:border-zinc-700"
+									className={inputClass}
 								/>
 							</label>
 						))}
+						{doseFields
+							.filter(([, group]) => available[group])
+							.map(([key, , label]) => (
+								<label key={key} className="grid gap-1 text-sm">
+									{label}
+									<input
+										type="number"
+										min="5"
+										max="50"
+										step="0.1"
+										required
+										value={draft[key]}
+										disabled={busy}
+										onInput={(event) =>
+											setDraft({ ...draft, [key]: event.currentTarget.value })
+										}
+										className={inputClass}
+									/>
+								</label>
+							))}
 					</div>
-					<button
-						type="submit"
-						disabled={busy}
-						className="w-fit rounded-md bg-zinc-900 px-3 py-2 text-sm text-white disabled:opacity-50 dark:bg-zinc-100 dark:text-zinc-900"
-					>
-						Save safeguards
-					</button>
+					<div className="flex gap-2">
+						<button
+							type="submit"
+							disabled={busy}
+							className="rounded-md bg-zinc-900 px-3 py-2 text-sm text-white disabled:opacity-50 dark:bg-zinc-100 dark:text-zinc-900"
+						>
+							Save safeguards
+						</button>
+						<button
+							type="button"
+							onClick={toggleConfigure}
+							disabled={busy}
+							className="rounded-md border border-zinc-300 px-3 py-2 text-sm dark:border-zinc-700"
+						>
+							Cancel
+						</button>
+					</div>
 				</form>
 			)}
 
 			{doseOpen && (
-				<form onSubmit={triggerDose} className="mb-5 grid gap-3">
-					<h4 className="font-semibold">Enter current solution readings</h4>
+				<form onSubmit={triggerDose} className="mt-4 grid gap-3">
+					<h4 className="font-semibold">Enter the current readings</h4>
 					<div className="grid gap-3 sm:grid-cols-2">
 						<label className="grid gap-1 text-sm">
 							Measured pH
@@ -177,7 +264,7 @@ export default function SemiAutomatic({ system, saving, onSave, onRun }) {
 								value={ph}
 								disabled={busy}
 								onInput={(event) => setPh(event.currentTarget.value)}
-								className="min-w-0 rounded-md border border-zinc-300 bg-transparent px-3 py-2 dark:border-zinc-700"
+								className={inputClass}
 							/>
 						</label>
 						<label className="grid gap-1 text-sm">
@@ -190,7 +277,7 @@ export default function SemiAutomatic({ system, saving, onSave, onRun }) {
 								value={tds}
 								disabled={busy}
 								onInput={(event) => setTds(event.currentTarget.value)}
-								className="min-w-0 rounded-md border border-zinc-300 bg-transparent px-3 py-2 dark:border-zinc-700"
+								className={inputClass}
 							/>
 						</label>
 					</div>
@@ -198,7 +285,7 @@ export default function SemiAutomatic({ system, saving, onSave, onRun }) {
 						<button
 							type="submit"
 							disabled={busy}
-							className="rounded-md bg-emerald-700 px-3 py-2 text-sm font-semibold text-white disabled:opacity-40"
+							className="min-h-10 rounded-md bg-emerald-700 px-4 text-sm font-semibold text-white disabled:opacity-40"
 						>
 							{running ? "Checking and dosing…" : "Check guardrails and dose"}
 						</button>
@@ -206,7 +293,7 @@ export default function SemiAutomatic({ system, saving, onSave, onRun }) {
 							type="button"
 							disabled={busy}
 							onClick={() => setDoseOpen(false)}
-							className="rounded-md border border-zinc-300 px-3 py-2 text-sm disabled:opacity-40 dark:border-zinc-700"
+							className="rounded-md border border-zinc-300 px-3 text-sm disabled:opacity-40 dark:border-zinc-700"
 						>
 							Cancel
 						</button>
@@ -215,27 +302,40 @@ export default function SemiAutomatic({ system, saving, onSave, onRun }) {
 			)}
 
 			{error && (
-				<p role="alert" className="mb-3 text-sm text-red-600 dark:text-red-400">
+				<p role="alert" className="mt-3 text-sm text-red-600 dark:text-red-400">
 					{error}
 				</p>
 			)}
 			{result && (
-				<p
+				<div
 					role="status"
-					className={`mb-3 text-sm ${result.status === "completed" ? "text-emerald-700 dark:text-emerald-300" : "text-amber-700 dark:text-amber-300"}`}
+					className={`mt-3 rounded-md border-l-4 p-3 text-sm ${
+						result.allowed && result.status === "completed"
+							? "border-emerald-600"
+							: "border-amber-500"
+					}`}
 				>
-					{result.allowed
-						? result.status === "completed"
-							? `Dose completed: ${result.completed.join(", ")}.`
-							: `Dose ${result.status}: ${result.completed.join(", ") || "no pumps confirmed"}${result.reason ? ` — ${result.reason}` : ""}`
-						: `Dose declined: ${result.reason}`}
-				</p>
+					{result.allowed ? (
+						<p>
+							{result.status === "completed"
+								? `Dose completed: ${result.completed.map((role) => roleLabels[role]).join(", ")}.`
+								: `Dose ${result.status}: ${result.completed.map((role) => roleLabels[role]).join(", ") || "no pumps confirmed"}${result.reason ? ` — ${result.reason}` : ""}`}
+						</p>
+					) : (
+						<p>Dose declined — {result.reason}</p>
+					)}
+					{result.notes?.map((note) => (
+						<p key={note} className="mt-1 text-zinc-600 dark:text-zinc-400">
+							Note: {note}
+						</p>
+					))}
+				</div>
 			)}
 
 			{config?.history?.length > 0 && (
 				<details className="mt-4">
 					<summary className="cursor-pointer text-sm font-medium">
-						Semi-automatic dose log ({config.history.length})
+						Dose log ({config.history.length})
 					</summary>
 					<ul className="mt-2 grid gap-2">
 						{config.history
@@ -248,18 +348,18 @@ export default function SemiAutomatic({ system, saving, onSave, onRun }) {
 									className="rounded-md border border-zinc-200 p-3 text-sm dark:border-zinc-800"
 								>
 									<p className="font-medium">
-										{new Date(event.timestamp).toLocaleString()} ·{" "}
-										{event.type === "semi-automatic"
-											? "Semi-automatic"
-											: event.type}
+										{new Date(event.timestamp).toLocaleString()} ·
+										Semi-automatic
 									</p>
 									<p>
 										pH {event.measurements.ph}, TDS {event.measurements.tds} ppm
-										{" · "}
-										{statusLabel(event)}
+										· {describeEvent(event)}
 									</p>
 									{event.pumps.length > 0 && (
-										<p>Requested: {event.pumps.join(", ")}</p>
+										<p className="text-zinc-600 dark:text-zinc-400">
+											Requested:{" "}
+											{event.pumps.map((role) => roleLabels[role]).join(", ")}
+										</p>
 									)}
 								</li>
 							))}

@@ -50,3 +50,54 @@ test("unsafe readings and insufficient remaining activations block the whole seq
 		validateDoseConfig({ ...config, doses: { ...config.doses, phDown: 0 } }),
 	);
 });
+
+test("A+B-only and pH-down-only systems can each dose on their own", () => {
+	const nutrientsOnly = { nutrients: true, phDown: false };
+	const phOnly = { nutrients: false, phDown: true };
+	const low = { ph: 6, tds: 400 };
+	const high = { ph: 7, tds: 600 };
+
+	assert.deepEqual(decideSemiAutomatic(config, low, 0, nutrientsOnly).pumps, [
+		"solutionA",
+		"solutionB",
+	]);
+	assert.deepEqual(decideSemiAutomatic(config, high, 0, phOnly).pumps, [
+		"phDown",
+	]);
+
+	const both = { ph: 7, tds: 400 };
+	const partial = decideSemiAutomatic(config, both, 0, nutrientsOnly);
+	assert.equal(partial.allowed, true);
+	assert.deepEqual(partial.pumps, ["solutionA", "solutionB"]);
+	assert.match(partial.notes[0], /no pH down pump/);
+});
+
+test("declines explain missing pumps, missing volumes and the daily limit", () => {
+	const none = { nutrients: false, phDown: false };
+	const declined = decideSemiAutomatic(config, { ph: 7, tds: 400 }, 0, none);
+	assert.equal(declined.allowed, false);
+	assert.match(declined.reason, /Solution A and B are not both assigned/);
+	assert.match(declined.reason, /no pH down pump/);
+
+	const phConfig = { ...config, doses: { phDown: 5 } };
+	const missingVolume = decideSemiAutomatic(phConfig, { ph: 6, tds: 400 }, 0);
+	assert.match(
+		missingVolume.reason,
+		/dose volume for Solution A and Solution B/,
+	);
+
+	const limited = decideSemiAutomatic(config, { ph: 7, tds: 400 }, 1);
+	assert.match(limited.reason, /Daily limit reached: 1 of 3/);
+	assert.match(
+		decideSemiAutomatic(config, { ph: 6, tds: 600 }, 0).reason,
+		/within the configured ranges/,
+	);
+});
+
+test("only the pumps a system uses need a dose volume", () => {
+	validateDoseConfig({ ...config, doses: { phDown: 5 } });
+	assert.throws(() => validateDoseConfig({ ...config, doses: {} }));
+	assert.throws(() =>
+		validateDoseConfig({ ...config, doses: { phDown: 5, solutionA: 80 } }),
+	);
+});
