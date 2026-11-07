@@ -53,6 +53,7 @@ test("systems persist, reject duplicate channels and protect concurrent edits", 
 		assignments: {
 			circulationPump: { type: "switch", mac: "AA:BB:CC:DD:EE:FF", channel: 1 },
 			solutionA: { type: "dosing", mac: "11:22:33:44:55:66", channel: 1 },
+			phDown: { type: "dosing", mac: "11:22:33:44:55:77", channel: 1 },
 		},
 	};
 	assert.equal((await put(url, 0, [tower])).status, 200);
@@ -66,6 +67,11 @@ test("systems persist, reject duplicate channels and protect concurrent edits", 
 	const invalid = await put(url, 1, [tower, duplicate]);
 	assert.equal(invalid.status, 400);
 	assert.match((await invalid.json()).error, /only be assigned once/);
+	const duplicatePump = {
+		...tower,
+		assignments: { ...tower.assignments, phDown: tower.assignments.solutionA },
+	};
+	assert.equal((await put(url, 1, [duplicatePump])).status, 400);
 	const race = await Promise.all([
 		put(url, 1, [{ ...tower, name: "First" }]),
 		put(url, 1, [{ ...tower, name: "Second" }]),

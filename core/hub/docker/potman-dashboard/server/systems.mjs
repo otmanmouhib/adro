@@ -9,6 +9,7 @@ const roles = {
 	feedPump: { type: "switch", maxChannel: 4 },
 	solutionA: { type: "dosing", maxChannel: 2 },
 	solutionB: { type: "dosing", maxChannel: 2 },
+	phDown: { type: "dosing", maxChannel: 2 },
 };
 
 function validateSystems(systems) {

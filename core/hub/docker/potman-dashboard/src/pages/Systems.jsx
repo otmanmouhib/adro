@@ -22,6 +22,7 @@ const roles = [
 	{ key: "feedPump", label: "Feed pump / valve", type: "switch", count: 4 },
 	{ key: "solutionA", label: "Solution A", type: "dosing", count: 2 },
 	{ key: "solutionB", label: "Solution B", type: "dosing", count: 2 },
+	{ key: "phDown", label: "pH down", type: "dosing", count: 2 },
 ];
 
 function channelKey(assignment) {

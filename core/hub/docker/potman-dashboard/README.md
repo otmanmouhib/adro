@@ -31,7 +31,8 @@ with `docker compose up --build potman-dashboard` after preparing the hub
 configuration required by the Mosquitto service.
 
 The Systems page creates named standalone systems and maps their circulation
-pump, feed pump or valve, and solution A and B pumps to claimed device channels.
+pump, feed pump or valve, solution A and B, and pH-down pumps to claimed device
+channels.
 After saving an assignment, its channel's controls and settings appear on the
 system card. Controls are disabled while the device is offline or live
 telemetry is unavailable. Only online devices are offered for new assignments;
