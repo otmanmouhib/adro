@@ -36,15 +36,50 @@ function parseNumber(value) {
 }
 
 function describeEvent(event) {
-	if (!event.allowed) return `Declined — ${event.reason}`;
 	const done = event.completed?.map((role) => roleLabels[role]).join(", ");
-	const label = {
-		completed: "Completed",
-		partial: "Partial",
-		failed: "Failed",
-	}[event.status];
-	return `${label || "Running"}${done ? ` (${done})` : ""}${event.reason ? ` — ${event.reason}` : ""}`;
+	if (!event.allowed) return event.reason;
+	const description =
+		{
+			completed: `Dose completed${done ? `: ${done}` : ""}`,
+			partial: `Partial dose${done ? `: ${done}` : ""}`,
+			failed: `Dose failed${done ? `; completed: ${done}` : ""}`,
+		}[event.status] || "Dose in progress";
+	return `${description}${event.reason ? ` — ${event.reason}` : ""}`;
 }
+
+function eventOutcome(event) {
+	if (!event.allowed) return { label: "Declined", kind: "declined" };
+	const outcomes = {
+		completed: { label: "Success", kind: "completed" },
+		partial: { label: "Partial", kind: "partial" },
+		failed: { label: "Failed", kind: "failed" },
+	};
+	return outcomes[event.status] || { label: "Running", kind: "running" };
+}
+
+const outcomeStyles = {
+	completed:
+		"border-emerald-200 bg-emerald-50/70 dark:border-emerald-900/60 dark:bg-emerald-950/20",
+	partial:
+		"border-amber-200 bg-amber-50/70 dark:border-amber-900/60 dark:bg-amber-950/20",
+	failed:
+		"border-red-200 bg-red-50/70 dark:border-red-900/60 dark:bg-red-950/20",
+	declined:
+		"border-amber-200 bg-amber-50/70 dark:border-amber-900/60 dark:bg-amber-950/20",
+	running:
+		"border-sky-200 bg-sky-50/70 dark:border-sky-900/60 dark:bg-sky-950/20",
+};
+
+const outcomeBadgeStyles = {
+	completed:
+		"bg-emerald-100 text-emerald-800 dark:bg-emerald-900/60 dark:text-emerald-200",
+	partial:
+		"bg-amber-100 text-amber-800 dark:bg-amber-900/60 dark:text-amber-200",
+	failed: "bg-red-100 text-red-800 dark:bg-red-900/60 dark:text-red-200",
+	declined:
+		"bg-amber-100 text-amber-800 dark:bg-amber-900/60 dark:text-amber-200",
+	running: "bg-sky-100 text-sky-800 dark:bg-sky-900/60 dark:text-sky-200",
+};
 
 export default function SemiAutomatic({
 	system,
@@ -135,9 +170,9 @@ export default function SemiAutomatic({
 	return (
 		<section
 			aria-label={`Semi-automatic dosing for ${system.name}`}
-			className="mb-5 rounded-lg border border-emerald-700/40 bg-emerald-50/40 p-4 dark:bg-emerald-950/20"
+			className="mb-3 rounded-lg border border-emerald-700/40 bg-emerald-50/40 p-3 dark:bg-emerald-950/20"
 		>
-			<header className="flex flex-wrap items-center justify-between gap-3">
+			<header className="flex flex-wrap items-center justify-between gap-2">
 				<div>
 					<h3 className="font-semibold">Semi-automatic dosing</h3>
 					<p className="text-xs text-zinc-600 dark:text-zinc-400">
@@ -335,44 +370,55 @@ export default function SemiAutomatic({
 			)}
 
 			{config?.history?.length > 0 && (
-				<details className="mt-4">
+				<details className="mt-3">
 					<summary className="cursor-pointer text-sm font-medium">
-						Dose log ({config.history.length})
+						Dose history ({config.history.length})
 					</summary>
-					<ul className="mt-2 grid gap-2">
+					<ul className="mt-2 grid max-h-80 gap-2 overflow-y-auto pr-1">
 						{config.history
 							.slice()
 							.reverse()
 							.slice(0, 10)
-							.map((event) => (
-								<li
-									key={event.id}
-									className="rounded-md border border-zinc-200 p-3 text-sm dark:border-zinc-800"
-								>
-									<p className="font-medium">
-										{new Date(event.timestamp).toLocaleString()} ·
-										Semi-automatic
-									</p>
-									<p>
-										pH {event.measurements.ph}, TDS {event.measurements.tds} ppm
-										· {describeEvent(event)}
-									</p>
-									{event.pumps.length > 0 && (
-										<p className="text-zinc-600 dark:text-zinc-400">
-											Requested:{" "}
-											{event.pumps.map((role) => roleLabels[role]).join(", ")}
+							.map((event) => {
+								const outcome = eventOutcome(event);
+								return (
+									<li
+										key={event.id}
+										className={`rounded-md border p-3 text-sm ${outcomeStyles[outcome.kind]}`}
+									>
+										<div className="flex flex-wrap items-center justify-between gap-2">
+											<p className="text-xs text-zinc-600 dark:text-zinc-400">
+												{new Date(event.timestamp).toLocaleString()} ·
+												Semi-automatic
+											</p>
+											<span
+												className={`rounded-full px-2 py-0.5 text-xs font-semibold ${outcomeBadgeStyles[outcome.kind]}`}
+											>
+												{outcome.label}
+											</span>
+										</div>
+										<p className="mt-1 font-medium">
+											pH {event.measurements.ph} · TDS {event.measurements.tds}{" "}
+											ppm
 										</p>
-									)}
-									{event.notes?.map((note) => (
-										<p
-											key={note}
-											className="text-amber-700 dark:text-amber-300"
-										>
-											Not dosed: {note}
-										</p>
-									))}
-								</li>
-							))}
+										<p>{describeEvent(event)}</p>
+										{event.pumps.length > 0 && (
+											<p className="mt-1 text-xs text-zinc-600 dark:text-zinc-400">
+												Requested:{" "}
+												{event.pumps.map((role) => roleLabels[role]).join(", ")}
+											</p>
+										)}
+										{event.notes?.map((note) => (
+											<p
+												key={note}
+												className="mt-1 text-xs text-amber-800 dark:text-amber-300"
+											>
+												Not dosed: {note}
+											</p>
+										))}
+									</li>
+								);
+							})}
 					</ul>
 				</details>
 			)}

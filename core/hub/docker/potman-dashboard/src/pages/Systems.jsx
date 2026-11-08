@@ -750,7 +750,7 @@ export default function SystemsPage() {
 							{state.systems.map((system) => (
 								<section
 									key={system.id}
-									className="rounded-lg border border-zinc-200 p-5 dark:border-zinc-800"
+									className="rounded-lg border border-zinc-200 p-4 dark:border-zinc-800"
 								>
 									{editing?.id === system.id ? (
 										<form onSubmit={saveSystem} className="grid gap-4">
@@ -872,7 +872,7 @@ export default function SystemsPage() {
 									) : (
 										<>
 											<h2 className="text-lg font-semibold">{system.name}</h2>
-											<p className="mb-4 text-sm text-zinc-500">
+											<p className="mb-3 text-sm text-zinc-500">
 												Standalone system
 											</p>
 											<SemiAutomatic
@@ -898,39 +898,75 @@ export default function SystemsPage() {
 													runSemiAutomatic(system, measurements)
 												}
 											/>
-											<div className="grid gap-4 sm:grid-cols-2">
+											<div className="grid gap-2 sm:grid-cols-2">
 												{roles.map((role) => {
 													const assignment = system.assignments[role.key];
-													const device =
-														assignment &&
-														devices.find(
-															(item) =>
-																item.type === assignment.type &&
-																channelKey({
-																	...item,
-																	channel: assignment.channel,
-																}) === channelKey(assignment),
+													if (!assignment) {
+														return (
+															<section
+																key={role.key}
+																className="min-w-0 rounded-md border border-zinc-200 p-3 dark:border-zinc-800"
+															>
+																<h3 className="text-sm font-medium">
+																	{role.label}
+																</h3>
+																<p className="mt-1 text-xs text-zinc-500">
+																	Not assigned
+																</p>
+															</section>
 														);
-													const selectedDevice =
-														device ||
-														(assignment && {
-															type: assignment.type,
-															mac: assignment.mac,
-															status: "offline",
-														});
+													}
+													const device = devices.find(
+														(item) =>
+															item.type === assignment.type &&
+															channelKey({
+																...item,
+																channel: assignment.channel,
+															}) === channelKey(assignment),
+													);
+													const selectedDevice = device || {
+														type: assignment.type,
+														mac: assignment.mac,
+														status: "offline",
+													};
 													const Controls =
 														assignment?.type === "switch"
 															? SwitchDetails
 															: DosingDetails;
+													const isOnline =
+														connected && device?.status === "online";
+													const deviceName = deviceNames[assignment.mac]
+														? `${deviceNames[assignment.mac]} (${assignment.mac})`
+														: assignment.mac;
 													return (
-														<section key={role.key} className="min-w-0">
-															<h3 className="font-medium">{role.label}</h3>
-															<p className="mb-3 text-xs text-zinc-500">
-																{assignment
-																	? `${deviceNames[assignment.mac] ? `${deviceNames[assignment.mac]} (${assignment.mac})` : assignment.mac} · ${assignment.type === "switch" ? "SSR" : "Pump"} ${assignment.channel}`
-																	: "Not assigned"}
-															</p>
-															{assignment && (
+														<details
+															key={role.key}
+															className="min-w-0 rounded-md border border-zinc-200 dark:border-zinc-800"
+														>
+															<summary className="flex cursor-pointer items-center justify-between gap-2 p-3">
+																<span className="min-w-0">
+																	<span className="block text-sm font-medium">
+																		{role.label}
+																	</span>
+																	<span className="block truncate text-xs text-zinc-500">
+																		{deviceName} ·{" "}
+																		{assignment.type === "switch"
+																			? "SSR"
+																			: "Pump"}{" "}
+																		{assignment.channel}
+																	</span>
+																</span>
+																<span
+																	className={`shrink-0 rounded-full px-2 py-0.5 text-xs font-medium ${
+																		isOnline
+																			? "bg-emerald-100 text-emerald-800 dark:bg-emerald-900/60 dark:text-emerald-200"
+																			: "bg-zinc-100 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300"
+																	}`}
+																>
+																	{isOnline ? "Online" : "Offline"}
+																</span>
+															</summary>
+															<div className="border-t border-zinc-200 p-3 dark:border-zinc-800">
 																<Controls
 																	key={channelKey(assignment)}
 																	device={selectedDevice}
@@ -946,12 +982,12 @@ export default function SystemsPage() {
 																		saveDeviceConfig(assignment, config)
 																	}
 																/>
-															)}
-														</section>
+															</div>
+														</details>
 													);
 												})}
 											</div>
-											<div className="mt-5 flex gap-2">
+											<div className="mt-4 flex gap-2">
 												<button
 													type="button"
 													disabled={saving}
