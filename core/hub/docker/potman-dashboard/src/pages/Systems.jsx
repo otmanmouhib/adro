@@ -36,6 +36,12 @@ function channelKey(assignment) {
 	return `${assignment.type}:${assignment.mac.replace(/[:-]/g, "").toLowerCase()}:${assignment.channel}`;
 }
 
+function createId() {
+	return Array.from(crypto.getRandomValues(new Uint8Array(16)), (byte) =>
+		byte.toString(16).padStart(2, "0"),
+	).join("");
+}
+
 function deviceKey(device) {
 	return `${device.type}:${device.mac.replace(/[:-]/g, "").toLowerCase()}`;
 }
@@ -339,7 +345,7 @@ function useAvailableDevices() {
 		}
 		await configConfirmed;
 
-		const requestId = crypto.randomUUID();
+		const requestId = createId();
 		const acknowledgment = waitForTelemetry(assignment, (data) => {
 			const ack = data.last_dose_command;
 			if (ack?.request_id !== requestId) return undefined;
@@ -630,9 +636,7 @@ export default function SystemsPage() {
 		event.preventDefault();
 		const trimmed = name.trim();
 		if (!trimmed) return;
-		const id = Array.from(crypto.getRandomValues(new Uint8Array(16)), (byte) =>
-			byte.toString(16).padStart(2, "0"),
-		).join("");
+		const id = createId();
 		const system = {
 			id,
 			name: trimmed,
