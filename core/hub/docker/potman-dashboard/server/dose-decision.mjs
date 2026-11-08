@@ -61,17 +61,19 @@ export function decideSemiAutomatic(
 	available = { nutrients: true, phDown: true, phUp: true },
 ) {
 	validateDoseConfig(config);
+	const hasPh = measurements?.ph !== undefined && measurements.ph !== null;
+	const hasTds = measurements?.tds !== undefined && measurements.tds !== null;
 	if (
-		!measurements ||
-		!inRange(measurements.ph, 0, 14) ||
-		!inRange(measurements.tds, 0, Number.MAX_SAFE_INTEGER)
+		(!hasPh && !hasTds) ||
+		(hasPh && !inRange(measurements.ph, 0, 14)) ||
+		(hasTds && !inRange(measurements.tds, 0, Number.MAX_SAFE_INTEGER))
 	)
-		throw new Error("Enter valid pH and TDS readings");
+		throw new Error("Enter at least one valid pH or TDS reading");
 	if (!Number.isSafeInteger(dosesToday) || dosesToday < 0)
 		throw new Error("Invalid daily dose count");
 
 	const { ph, tds } = measurements;
-	if (ph < config.phMin && !available.phUp)
+	if (hasPh && ph < config.phMin && !available.phUp)
 		return decline(
 			`pH ${ph} is below the safe minimum of ${config.phMin} and no pH up pump is assigned to this system. No dose was given.`,
 		);
@@ -79,12 +81,12 @@ export function decideSemiAutomatic(
 	const pumps = [];
 	const notes = [];
 	// Too-concentrated solution never gets more nutrients, but pH can still be corrected.
-	const tooConcentrated = tds > config.tdsMax;
+	const tooConcentrated = hasTds && tds > config.tdsMax;
 	if (tooConcentrated)
 		notes.push(
 			`TDS ${tds} ppm is above the safe maximum of ${config.tdsMax} ppm, so no nutrients are dosed. Consider diluting the solution.`,
 		);
-	if (tds < config.tdsMin) {
+	if (hasTds && tds < config.tdsMin) {
 		if (available.nutrients) pumps.push("solutionA", "solutionB");
 		else
 			notes.push(
@@ -92,8 +94,8 @@ export function decideSemiAutomatic(
 			);
 	}
 	// pH correction runs after nutrients, which can shift pH.
-	if (ph < config.phMin) pumps.push("phUp");
-	if (ph > config.phMax) {
+	if (hasPh && ph < config.phMin) pumps.push("phUp");
+	if (hasPh && ph > config.phMax) {
 		if (available.phDown) pumps.push("phDown");
 		else
 			notes.push(
@@ -106,7 +108,7 @@ export function decideSemiAutomatic(
 		return decline(
 			notes.length
 				? notes.join(" ")
-				: "Readings are within the configured ranges; no dose is needed.",
+				: "Provided readings are within the configured ranges; no dose is needed.",
 		);
 
 	const missing = pumps.filter((role) => config.doses[role] === undefined);

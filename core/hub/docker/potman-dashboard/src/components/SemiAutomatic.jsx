@@ -114,7 +114,7 @@ export default function SemiAutomatic({
 		setError(null);
 		if (!config) {
 			setNotice(
-				"Save the safeguards once first. After that, Semi-auto dose asks for the pH and TDS readings each time.",
+				"Save the safeguards once first. After that, enter a pH reading, a TDS reading, or both for each dose.",
 			);
 			setConfigureOpen(true);
 			setDoseOpen(false);
@@ -156,9 +156,16 @@ export default function SemiAutomatic({
 		setResult(null);
 		setError(null);
 		setNotice(null);
+		const measurements = {};
+		if (ph.trim() !== "") measurements.ph = parseNumber(ph);
+		if (tds.trim() !== "") measurements.tds = parseNumber(tds);
+		if (!Object.keys(measurements).length) {
+			setError("Enter a pH reading, a TDS reading, or both.");
+			return;
+		}
 		setRunning(true);
 		try {
-			setResult(await onRun({ ph: parseNumber(ph), tds: parseNumber(tds) }));
+			setResult(await onRun(measurements));
 			setDoseOpen(false);
 		} catch (runError) {
 			setError(runError.message || "Semi-automatic dose request failed");
@@ -288,16 +295,21 @@ export default function SemiAutomatic({
 
 			{doseOpen && (
 				<form onSubmit={triggerDose} className="mt-4 grid gap-3">
-					<h4 className="font-semibold">Enter the current readings</h4>
+					<div>
+						<h4 className="font-semibold">Enter the current readings</h4>
+						<p className="text-xs text-zinc-600 dark:text-zinc-400">
+							At least one is required. TDS controls Solution A + B; pH controls
+							pH up/down.
+						</p>
+					</div>
 					<div className="grid gap-3 sm:grid-cols-2">
 						<label className="grid gap-1 text-sm">
-							Measured pH
+							Measured pH (optional)
 							<input
 								type="number"
 								min="0"
 								max="14"
 								step="any"
-								required
 								value={ph}
 								disabled={busy}
 								onInput={(event) => setPh(event.currentTarget.value)}
@@ -305,12 +317,11 @@ export default function SemiAutomatic({
 							/>
 						</label>
 						<label className="grid gap-1 text-sm">
-							Measured TDS (ppm)
+							Measured TDS (ppm, optional)
 							<input
 								type="number"
 								min="0"
 								step="any"
-								required
 								value={tds}
 								disabled={busy}
 								onInput={(event) => setTds(event.currentTarget.value)}
@@ -398,8 +409,14 @@ export default function SemiAutomatic({
 											</span>
 										</div>
 										<p className="mt-1 font-medium">
-											pH {event.measurements.ph} · TDS {event.measurements.tds}{" "}
-											ppm
+											{[
+												event.measurements.ph != null &&
+													`pH ${event.measurements.ph}`,
+												event.measurements.tds != null &&
+													`TDS ${event.measurements.tds} ppm`,
+											]
+												.filter(Boolean)
+												.join(" · ")}
 										</p>
 										<p>{describeEvent(event)}</p>
 										{event.pumps.length > 0 && (

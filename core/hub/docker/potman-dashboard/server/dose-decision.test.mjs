@@ -31,6 +31,20 @@ test("readings select paired nutrients and pH down", () => {
 	);
 });
 
+test("either reading can independently select its own pumps", () => {
+	assert.deepEqual(decideSemiAutomatic(config, { tds: 400 }, 0).pumps, [
+		"solutionA",
+		"solutionB",
+	]);
+	assert.deepEqual(decideSemiAutomatic(config, { ph: 7 }, 0).pumps, ["phDown"]);
+	assert.deepEqual(decideSemiAutomatic(config, { ph: 5 }, 0).pumps, ["phUp"]);
+	assert.throws(() => decideSemiAutomatic(config, {}, 0), /at least one/);
+	assert.throws(
+		() => decideSemiAutomatic(config, { ph: null, tds: null }, 0),
+		/at least one/,
+	);
+});
+
 test("unsafe readings and insufficient remaining activations block the whole sequence", () => {
 	assert.equal(
 		decideSemiAutomatic(config, { ph: 6, tds: 900 }, 0).allowed,
@@ -45,6 +59,7 @@ test("unsafe readings and insufficient remaining activations block the whole seq
 		false,
 	);
 	assert.throws(() => decideSemiAutomatic(config, { ph: NaN, tds: 400 }, 0));
+	assert.throws(() => decideSemiAutomatic(config, { tds: NaN }, 0));
 	assert.throws(() => validateDoseConfig({ ...config, mixingSeconds: 31 }));
 	assert.throws(() =>
 		validateDoseConfig({ ...config, doses: { ...config.doses, phDown: 0 } }),

@@ -144,15 +144,21 @@ const server = createServer(async (request, response) => {
 		input = await readJson(request);
 		if (semiMatch && request.method === "POST") {
 			if (semiMatch[2]) return send(response, 404, { error: "Not found" });
+			const ph = input.measurements?.ph;
+			const tds = input.measurements?.tds;
+			const hasPh = typeof ph === "number";
+			const hasTds = typeof tds === "number";
 			if (
-				!Number.isFinite(input.measurements?.ph) ||
-				input.measurements.ph < 0 ||
-				input.measurements.ph > 14 ||
-				!Number.isFinite(input.measurements?.tds) ||
-				input.measurements.tds < 0 ||
-				input.measurements.tds > Number.MAX_SAFE_INTEGER
+				(!hasPh && !hasTds) ||
+				(hasPh && (!Number.isFinite(ph) || ph < 0 || ph > 14)) ||
+				(hasTds &&
+					(!Number.isFinite(tds) || tds < 0 || tds > Number.MAX_SAFE_INTEGER))
 			)
-				throw new Error("Enter a pH reading from 0 to 14 and non-negative TDS");
+				throw new Error("Enter at least one valid pH or TDS reading");
+			input.measurements = {
+				...(hasPh ? { ph } : {}),
+				...(hasTds ? { tds } : {}),
+			};
 		} else if (semiMatch && request.method === "PATCH") {
 			if (
 				!semiMatch[2] ||

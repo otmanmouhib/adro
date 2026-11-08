@@ -101,15 +101,23 @@ test("systems persist, reject duplicate channels and protect concurrent edits", 
 	);
 	const withSettings = await (await fetch(url)).json();
 	const semiAutomaticUrl = `${url}/tower-1/semi-automatic`;
+	const emptyDose = await fetch(semiAutomaticUrl, {
+		method: "POST",
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify({ measurements: {} }),
+	});
+	assert.equal(emptyDose.status, 400);
+	assert.match((await emptyDose.json()).error, /at least one/);
 	const dose = await fetch(semiAutomaticUrl, {
 		method: "POST",
 		headers: { "Content-Type": "application/json" },
-		body: JSON.stringify({ measurements: { ph: 6, tds: 400 } }),
+		body: JSON.stringify({ measurements: { tds: 400 } }),
 	});
 	assert.equal(dose.status, 200);
 	const doseEvent = await dose.json();
 	assert.equal(doseEvent.allowed, true);
 	assert.deepEqual(doseEvent.pumps, ["solutionA", "solutionB"]);
+	assert.deepEqual(doseEvent.measurements, { tds: 400 });
 	const completed = await fetch(`${semiAutomaticUrl}/${doseEvent.id}`, {
 		method: "PATCH",
 		headers: { "Content-Type": "application/json" },
@@ -123,11 +131,12 @@ test("systems persist, reject duplicate channels and protect concurrent edits", 
 	const reservedDose = await fetch(semiAutomaticUrl, {
 		method: "POST",
 		headers: { "Content-Type": "application/json" },
-		body: JSON.stringify({ measurements: { ph: 7, tds: 600 } }),
+		body: JSON.stringify({ measurements: { ph: 7 } }),
 	});
 	const reservedEvent = await reservedDose.json();
 	assert.equal(reservedEvent.allowed, true);
 	assert.deepEqual(reservedEvent.pumps, ["phDown"]);
+	assert.deepEqual(reservedEvent.measurements, { ph: 7 });
 	const notAttempted = await fetch(`${semiAutomaticUrl}/${reservedEvent.id}`, {
 		method: "PATCH",
 		headers: { "Content-Type": "application/json" },
